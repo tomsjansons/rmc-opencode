@@ -1,8 +1,17 @@
 import * as core from '@actions/core'
+
+import { OPENCODE_SERVER_URL } from './config/constants.js'
 import { parseInputs, validateConfig } from './config/inputs.js'
+import { GitHubAPI } from './github/api.js'
+import { OpenCodeClientImpl } from './opencode/client.js'
+import { ReviewOrchestrator } from './review/orchestrator.js'
+import { setupToolsInWorkspace } from './setup/tools.js'
+import { TRPCServer } from './trpc/server.js'
 import { logger } from './utils/logger.js'
 
 export async function run(): Promise<void> {
+  let trpcServer: TRPCServer | null = null
+
   try {
     logger.info('Starting OpenCode PR Reviewer...')
 
@@ -16,8 +25,24 @@ export async function run(): Promise<void> {
       `Model: ${config.opencode.model}, Threshold: ${config.scoring.problemThreshold}`
     )
 
-    // TODO: Implement review logic in subsequent phases
-    logger.warning('Review logic not yet implemented - Phase 2+')
+    logger.info('Setting up OpenCode tools...')
+    await setupToolsInWorkspace()
+
+    const github = new GitHubAPI()
+    const opencode = new OpenCodeClientImpl(OPENCODE_SERVER_URL)
+    const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd()
+
+    const orchestrator = new ReviewOrchestrator(
+      opencode,
+      github,
+      config,
+      workspaceRoot
+    )
+
+    trpcServer = new TRPCServer(orchestrator, github)
+    await trpcServer.start()
+
+    logger.warning('Review execution not yet implemented - Phase 5')
 
     core.setOutput('review_status', 'completed')
     core.setOutput('issues_found', '0')
@@ -32,6 +57,10 @@ export async function run(): Promise<void> {
       const errorMessage = 'An unknown error occurred'
       logger.error(errorMessage)
       core.setFailed(errorMessage)
+    }
+  } finally {
+    if (trpcServer) {
+      await trpcServer.stop()
     }
   }
 }

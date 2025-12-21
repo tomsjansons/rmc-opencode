@@ -171,6 +171,10 @@ export class ReviewOrchestrator {
     this.currentSessionId = session.id
     logger.info(`Created session: ${session.id}`)
 
+    logger.info('Injecting system prompt into session')
+    await this.opencode.sendSystemPrompt(session.id, REVIEW_PROMPTS.SYSTEM)
+    logger.info('System prompt injected successfully')
+
     return session.id
   }
 
@@ -408,6 +412,10 @@ ${diff.length > 5000 ? diff.substring(0, 5000) + '\n... (truncated)' : diff}
 
   getState(): ReviewState | null {
     return this.reviewState
+  }
+
+  getConfig(): ReviewConfig {
+    return this.config
   }
 
   async getThreadsRequiringVerification(): Promise<ReviewThread[]> {
