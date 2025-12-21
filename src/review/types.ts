@@ -8,6 +8,10 @@ export interface ReviewConfig {
     problemThreshold: number // 1-10
     elevationThreshold: number // Number of issues to elevate
   }
+  review: {
+    timeoutMs: number // Total timeout for entire review in milliseconds
+    maxRetries: number // Maximum number of retry attempts
+  }
   github: {
     token: string
     owner: string

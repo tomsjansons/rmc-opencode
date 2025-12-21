@@ -24,6 +24,22 @@ export function parseInputs(): ReviewConfig {
     'Score elevation threshold must be between 1 and 100'
   )
 
+  const reviewTimeoutMinutes = parseNumericInput(
+    'review_timeout_minutes',
+    40,
+    5,
+    120,
+    'Review timeout must be between 5 and 120 minutes'
+  )
+
+  const maxRetries = parseNumericInput(
+    'max_review_retries',
+    1,
+    0,
+    3,
+    'Max review retries must be between 0 and 3'
+  )
+
   const githubToken = core.getInput('github_token', { required: true })
 
   const context = github.context
@@ -55,6 +71,10 @@ export function parseInputs(): ReviewConfig {
     scoring: {
       problemThreshold,
       elevationThreshold
+    },
+    review: {
+      timeoutMs: reviewTimeoutMinutes * 60 * 1000,
+      maxRetries
     },
     github: {
       token: githubToken,
@@ -104,6 +124,14 @@ export function validateConfig(config: ReviewConfig): void {
 
   if (config.scoring.elevationThreshold < 1) {
     throw new Error('Elevation threshold must be at least 1')
+  }
+
+  if (config.review.timeoutMs < 5 * 60 * 1000) {
+    throw new Error('Review timeout must be at least 5 minutes')
+  }
+
+  if (config.review.maxRetries < 0 || config.review.maxRetries > 3) {
+    throw new Error('Max retries must be between 0 and 3')
   }
 
   if (!config.github.token) {

@@ -25,3 +25,13 @@ export class ReviewError extends Error {
     this.name = 'ReviewError'
   }
 }
+
+export class OrchestratorError extends Error {
+  constructor(
+    message: string,
+    public cause?: Error
+  ) {
+    super(message)
+    this.name = 'OrchestratorError'
+  }
+}

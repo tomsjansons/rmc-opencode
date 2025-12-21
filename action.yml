@@ -25,6 +25,14 @@ inputs:
     description: 'Number of low-score issues to elevate collectively'
     required: false
     default: '5'
+  review_timeout_minutes:
+    description: 'Total timeout for entire review in minutes (5-120)'
+    required: false
+    default: '40'
+  max_review_retries:
+    description: 'Maximum number of retry attempts if review times out (0-3)'
+    required: false
+    default: '1'
   enable_web:
     description: 'Enable web search and fetch capabilities'
     required: false
