@@ -11,7 +11,12 @@ import type { OpenCodeClient } from '../opencode/client.js'
 import { OrchestratorError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 import { REVIEW_PROMPTS, buildSecuritySensitivity } from './prompts.js'
-import type { PassResult, ReviewConfig, ReviewOutput } from './types.js'
+import type {
+  DisputeContext,
+  PassResult,
+  ReviewConfig,
+  ReviewOutput
+} from './types.js'
 
 type PassNumber = 1 | 2 | 3 | 4
 
@@ -145,8 +150,15 @@ export class ReviewOrchestrator {
     })
   }
 
-  async executeDisputeResolution(): Promise<void> {
+  async executeDisputeResolution(
+    disputeContext?: DisputeContext
+  ): Promise<void> {
     await logger.group('Dispute Resolution', async () => {
+      if (disputeContext) {
+        await this.handleSingleDispute(disputeContext)
+        return
+      }
+
       const threadsWithReplies =
         await this.stateManager.getThreadsWithDeveloperReplies()
 
@@ -209,6 +221,68 @@ export class ReviewOrchestrator {
         await this.sendPromptToOpenCode(prompt)
       }
     })
+  }
+
+  private async handleSingleDispute(
+    disputeContext: DisputeContext
+  ): Promise<void> {
+    const { threadId, replyBody, replyAuthor, file, line } = disputeContext
+
+    logger.info(`Processing reply from ${replyAuthor} on thread ${threadId}`)
+    logger.info(`File: ${file}:${line || 'N/A'}`)
+
+    const state = await this.stateManager.getOrCreateState()
+    const thread = state.threads.find((t) => t.id === threadId)
+
+    if (!thread) {
+      logger.warning(
+        `Thread ${threadId} not found in state. This may be a reply to a non-bot comment.`
+      )
+      return
+    }
+
+    if (thread.status === 'RESOLVED') {
+      logger.info(`Thread ${threadId} is already resolved, skipping.`)
+      return
+    }
+
+    const classification = await this.stateManager.classifyDeveloperReply(
+      thread.assessment.finding,
+      replyBody
+    )
+
+    logger.info(
+      `Classified reply as: ${classification} (thread ${threadId}, author: ${replyAuthor})`
+    )
+
+    let prompt: string
+
+    if (classification === 'question') {
+      logger.info(
+        'Developer asked for clarification - using Q&A mode for detailed explanation'
+      )
+      prompt = REVIEW_PROMPTS.CLARIFY_REVIEW_FINDING(
+        thread.assessment.finding,
+        thread.assessment.assessment,
+        replyBody,
+        thread.file,
+        thread.line
+      )
+    } else {
+      prompt = REVIEW_PROMPTS.DISPUTE_EVALUATION(
+        thread.id,
+        thread.assessment.finding,
+        thread.assessment.assessment,
+        thread.score,
+        thread.file,
+        thread.line,
+        replyBody,
+        classification,
+        this.config.dispute.enableHumanEscalation
+      )
+    }
+
+    await this.sendPromptToOpenCode(prompt)
   }
 
   private async executePass(

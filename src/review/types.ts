@@ -13,6 +13,15 @@ export type QuestionContext = {
   }
 }
 
+export type DisputeContext = {
+  threadId: string
+  replyCommentId: string
+  replyBody: string
+  replyAuthor: string
+  file: string
+  line?: number
+}
+
 export type ReviewConfig = {
   opencode: {
     apiKey: string
@@ -41,6 +50,7 @@ export type ReviewConfig = {
   execution: {
     mode: ExecutionMode
     questionContext?: QuestionContext
+    disputeContext?: DisputeContext
   }
 }
 

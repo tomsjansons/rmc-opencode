@@ -31284,7 +31284,7 @@ function parseInputs() {
         ? humanReviewersInput.split(',').map((r) => r.trim())
         : [];
     const context = githubExports.context;
-    const { mode, prNumber, questionContext } = detectExecutionMode(context);
+    const { mode, prNumber, questionContext, disputeContext } = detectExecutionMode(context);
     const owner = context.repo.owner;
     const repo = context.repo.repo;
     if (!apiKey || apiKey.trim() === '') {
@@ -31320,11 +31320,45 @@ function parseInputs() {
         },
         execution: {
             mode,
-            questionContext
+            questionContext,
+            disputeContext
         }
     };
 }
 function detectExecutionMode(context) {
+    if (context.eventName === 'pull_request_review_comment') {
+        const comment = context.payload.comment;
+        const pullRequest = context.payload.pull_request;
+        if (!pullRequest?.number) {
+            throw new Error('No PR number found in pull_request_review_comment event.');
+        }
+        const inReplyToId = comment?.in_reply_to_id;
+        if (!inReplyToId) {
+            coreExports.info('Review comment is not a reply to an existing thread, skipping dispute resolution.');
+            throw new Error('This action only handles replies to existing review threads. New review comments are ignored.');
+        }
+        const commentAuthor = comment?.user?.login || 'unknown';
+        const botUsers = ['github-actions[bot]', 'opencode-reviewer[bot]'];
+        if (botUsers.includes(commentAuthor)) {
+            coreExports.info('Ignoring comment from bot user to prevent loops.');
+            throw new Error('Skipping: Comment is from a bot user.');
+        }
+        coreExports.info(`Dispute/reply detected on thread ${inReplyToId}`);
+        coreExports.info(`Reply by: ${commentAuthor}`);
+        coreExports.info(`Reply body: ${comment?.body?.substring(0, 100)}...`);
+        return {
+            mode: 'dispute-resolution',
+            prNumber: pullRequest.number,
+            disputeContext: {
+                threadId: String(inReplyToId),
+                replyCommentId: String(comment?.id || ''),
+                replyBody: comment?.body || '',
+                replyAuthor: commentAuthor,
+                file: comment?.path || '',
+                line: comment?.line || comment?.original_line
+            }
+        };
+    }
     if (context.eventName === 'issue_comment') {
         const comment = context.payload.comment;
         const issue = context.payload.issue;
@@ -31380,7 +31414,7 @@ function detectExecutionMode(context) {
             prNumber
         };
     }
-    throw new Error(`Unsupported event: ${context.eventName}. This action supports 'pull_request' and 'issue_comment' events only.`);
+    throw new Error(`Unsupported event: ${context.eventName}. This action supports 'pull_request', 'issue_comment', and 'pull_request_review_comment' events.`);
 }
 function parseNumericInput(name, defaultValue, min, max, errorMessage) {
     const input = coreExports.getInput(name, { required: false });
@@ -38924,8 +38958,12 @@ class ReviewOrchestrator {
             await this.sendPromptToOpenCode(prompt);
         });
     }
-    async executeDisputeResolution() {
+    async executeDisputeResolution(disputeContext) {
         await logger.group('Dispute Resolution', async () => {
+            if (disputeContext) {
+                await this.handleSingleDispute(disputeContext);
+                return;
+            }
             const threadsWithReplies = await this.stateManager.getThreadsWithDeveloperReplies();
             if (threadsWithReplies.length === 0) {
                 logger.info('No developer replies to evaluate');
@@ -38954,6 +38992,32 @@ class ReviewOrchestrator {
                 await this.sendPromptToOpenCode(prompt);
             }
         });
+    }
+    async handleSingleDispute(disputeContext) {
+        const { threadId, replyBody, replyAuthor, file, line } = disputeContext;
+        logger.info(`Processing reply from ${replyAuthor} on thread ${threadId}`);
+        logger.info(`File: ${file}:${line || 'N/A'}`);
+        const state = await this.stateManager.getOrCreateState();
+        const thread = state.threads.find((t) => t.id === threadId);
+        if (!thread) {
+            logger.warning(`Thread ${threadId} not found in state. This may be a reply to a non-bot comment.`);
+            return;
+        }
+        if (thread.status === 'RESOLVED') {
+            logger.info(`Thread ${threadId} is already resolved, skipping.`);
+            return;
+        }
+        const classification = await this.stateManager.classifyDeveloperReply(thread.assessment.finding, replyBody);
+        logger.info(`Classified reply as: ${classification} (thread ${threadId}, author: ${replyAuthor})`);
+        let prompt;
+        if (classification === 'question') {
+            logger.info('Developer asked for clarification - using Q&A mode for detailed explanation');
+            prompt = REVIEW_PROMPTS.CLARIFY_REVIEW_FINDING(thread.assessment.finding, thread.assessment.assessment, replyBody, thread.file, thread.line);
+        }
+        else {
+            prompt = REVIEW_PROMPTS.DISPUTE_EVALUATION(thread.id, thread.assessment.finding, thread.assessment.assessment, thread.score, thread.file, thread.line, replyBody, classification, this.config.dispute.enableHumanEscalation);
+        }
+        await this.sendPromptToOpenCode(prompt);
     }
     async executePass(passNumber, prompt) {
         await logger.group(`Pass ${passNumber} of 4`, async () => {
@@ -47216,7 +47280,7 @@ ${answer}
         }
         else if (config.execution.mode === 'dispute-resolution') {
             logger.info('Execution mode: Dispute Resolution Only');
-            await orchestrator.executeDisputeResolution();
+            await orchestrator.executeDisputeResolution(config.execution.disputeContext);
             coreExports.setOutput('review_status', 'disputes_evaluated');
             coreExports.setOutput('issues_found', '0');
             coreExports.setOutput('blocking_issues', '0');

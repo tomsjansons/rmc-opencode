@@ -366,10 +366,19 @@ describe('StateManager', () => {
     })
   })
 
-  describe('extractAssessmentFromComment', () => {
-    it('should extract assessment from rmcoc block', () => {
-      const comment = `
-Some text before
+  describe('assessment parsing via rebuildStateFromComments', () => {
+    it('should parse assessment from rmcoc block', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: { head: { sha: 'test-sha' } }
+      })
+
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: `Some text before
 
 \`\`\`rmcoc
 {
@@ -379,28 +388,34 @@ Some text before
 }
 \`\`\`
 
-Some text after
-      `
+Some text after`,
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
+          }
+        ]
+      })
 
-      const assessment = (
-        stateManager as unknown as {
-          extractAssessmentFromComment: (body: string) => {
-            finding: string
-            assessment: string
-            score: number
-          } | null
-        }
-      ).extractAssessmentFromComment(comment)
+      const state = await stateManager.rebuildStateFromComments()
 
-      expect(assessment).not.toBeNull()
-      expect(assessment?.finding).toBe('Test finding')
-      expect(assessment?.assessment).toBe('Test assessment')
-      expect(assessment?.score).toBe(7)
+      expect(state.threads).toHaveLength(1)
+      expect(state.threads[0].assessment.finding).toBe('Test finding')
+      expect(state.threads[0].assessment.assessment).toBe('Test assessment')
+      expect(state.threads[0].assessment.score).toBe(7)
     })
 
-    it('should fallback to JSON block for legacy comments', () => {
-      const comment = `
-Some text before
+    it('should fallback to JSON block for legacy comments', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: { head: { sha: 'test-sha' } }
+      })
+
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: `Some text before
 
 \`\`\`json
 {
@@ -410,26 +425,34 @@ Some text before
 }
 \`\`\`
 
-Some text after
-      `
-
-      const assessment = (
-        stateManager as unknown as {
-          extractAssessmentFromComment: (body: string) => {
-            finding: string
-            assessment: string
-            score: number
+Some text after`,
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
           }
-        }
-      ).extractAssessmentFromComment(comment)
+        ]
+      })
 
-      expect(assessment.finding).toBe('Test finding')
-      expect(assessment.assessment).toBe('Test assessment')
-      expect(assessment.score).toBe(7)
+      const state = await stateManager.rebuildStateFromComments()
+
+      expect(state.threads).toHaveLength(1)
+      expect(state.threads[0].assessment.finding).toBe('Test finding')
+      expect(state.threads[0].assessment.assessment).toBe('Test assessment')
+      expect(state.threads[0].assessment.score).toBe(7)
     })
 
-    it('should extract assessment from JSON without code fence', () => {
-      const comment = `Per AGENTS.md, prefer type over interface.
+    it('should parse assessment from JSON without code fence', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: { head: { sha: 'test-sha' } }
+      })
+
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: `Per AGENTS.md, prefer type over interface.
 
 export type PostReviewCommentArgs = {
   path: string
@@ -440,25 +463,33 @@ export type PostReviewCommentArgs = {
   "finding": "Violation of AGENTS.md",
   "assessment": "The project's AGENTS.md explicitly states 'Prefer type over interface'.",
   "score": 5
-}`
+}`,
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
+          }
+        ]
+      })
 
-      const assessment = (
-        stateManager as unknown as {
-          extractAssessmentFromComment: (body: string) => {
-            finding: string
-            assessment: string
-            score: number
-          } | null
-        }
-      ).extractAssessmentFromComment(comment)
+      const state = await stateManager.rebuildStateFromComments()
 
-      expect(assessment).not.toBeNull()
-      expect(assessment?.finding).toBe('Violation of AGENTS.md')
-      expect(assessment?.score).toBe(5)
+      expect(state.threads).toHaveLength(1)
+      expect(state.threads[0].assessment.finding).toBe('Violation of AGENTS.md')
+      expect(state.threads[0].assessment.score).toBe(5)
     })
 
-    it('should handle backticks in JSON strings', () => {
-      const comment = `Per \`AGENTS.md\`, prefer \`type\` over \`interface\`.
+    it('should handle backticks in JSON strings', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: { head: { sha: 'test-sha' } }
+      })
+
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: `Per \`AGENTS.md\`, prefer \`type\` over \`interface\`.
 
 \`\`\`typescript
 export type PostReviewCommentArgs = {
@@ -475,57 +506,71 @@ export type PostReviewCommentArgs = {
   "assessment": "The project's AGENTS.md explicitly states 'Prefer \`type\` over \`interface\`'. This interface definition should be a \`type\` alias.",
   "score": 5
 }
-\`\`\``
+\`\`\``,
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
+          }
+        ]
+      })
 
-      const assessment = (
-        stateManager as unknown as {
-          extractAssessmentFromComment: (body: string) => {
-            finding: string
-            assessment: string
-            score: number
-          } | null
-        }
-      ).extractAssessmentFromComment(comment)
+      const state = await stateManager.rebuildStateFromComments()
 
-      expect(assessment).not.toBeNull()
-      expect(assessment?.finding).toContain('Violation of AGENTS.md')
-      expect(assessment?.score).toBe(5)
+      expect(state.threads).toHaveLength(1)
+      expect(state.threads[0].assessment.finding).toContain(
+        'Violation of AGENTS.md'
+      )
+      expect(state.threads[0].assessment.score).toBe(5)
     })
 
-    it('should return null for comment without JSON', () => {
-      const comment = 'Just a regular comment without JSON'
+    it('should skip comment without valid JSON assessment', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: { head: { sha: 'test-sha' } }
+      })
 
-      const assessment = (
-        stateManager as unknown as {
-          extractAssessmentFromComment: (body: string) => {
-            finding: string
-            assessment: string
-            score: number
-          } | null
-        }
-      ).extractAssessmentFromComment(comment)
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: 'Just a regular comment without JSON',
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
+          }
+        ]
+      })
 
-      expect(assessment).toBeNull()
+      const state = await stateManager.rebuildStateFromComments()
+
+      expect(state.threads).toHaveLength(0)
     })
 
-    it('should return null for malformed JSON block', () => {
-      const comment = `
-\`\`\`json
+    it('should skip comment with malformed JSON block', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: { head: { sha: 'test-sha' } }
+      })
+
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: `\`\`\`json
 { invalid json }
-\`\`\`
-      `
+\`\`\``,
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
+          }
+        ]
+      })
 
-      const assessment = (
-        stateManager as unknown as {
-          extractAssessmentFromComment: (body: string) => {
-            finding: string
-            assessment: string
-            score: number
-          } | null
-        }
-      ).extractAssessmentFromComment(comment)
+      const state = await stateManager.rebuildStateFromComments()
 
-      expect(assessment).toBeNull()
+      expect(state.threads).toHaveLength(0)
     })
   })
 

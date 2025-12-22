@@ -1,6 +1,7 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
 import type {
+  DisputeContext,
   ExecutionMode,
   QuestionContext,
   ReviewConfig
@@ -71,7 +72,8 @@ export function parseInputs(): ReviewConfig {
 
   const context = github.context
 
-  const { mode, prNumber, questionContext } = detectExecutionMode(context)
+  const { mode, prNumber, questionContext, disputeContext } =
+    detectExecutionMode(context)
 
   const owner = context.repo.owner
   const repo = context.repo.repo
@@ -111,7 +113,8 @@ export function parseInputs(): ReviewConfig {
     },
     execution: {
       mode,
-      questionContext
+      questionContext,
+      disputeContext
     }
   }
 }
@@ -120,7 +123,53 @@ function detectExecutionMode(context: typeof github.context): {
   mode: ExecutionMode
   prNumber: number
   questionContext?: QuestionContext
+  disputeContext?: DisputeContext
 } {
+  if (context.eventName === 'pull_request_review_comment') {
+    const comment = context.payload.comment
+    const pullRequest = context.payload.pull_request
+
+    if (!pullRequest?.number) {
+      throw new Error(
+        'No PR number found in pull_request_review_comment event.'
+      )
+    }
+
+    const inReplyToId = comment?.in_reply_to_id
+    if (!inReplyToId) {
+      core.info(
+        'Review comment is not a reply to an existing thread, skipping dispute resolution.'
+      )
+      throw new Error(
+        'This action only handles replies to existing review threads. New review comments are ignored.'
+      )
+    }
+
+    const commentAuthor = comment?.user?.login || 'unknown'
+    const botUsers = ['github-actions[bot]', 'opencode-reviewer[bot]']
+    if (botUsers.includes(commentAuthor)) {
+      core.info('Ignoring comment from bot user to prevent loops.')
+      throw new Error('Skipping: Comment is from a bot user.')
+    }
+
+    core.info(`Dispute/reply detected on thread ${inReplyToId}`)
+    core.info(`Reply by: ${commentAuthor}`)
+    core.info(`Reply body: ${comment?.body?.substring(0, 100)}...`)
+
+    return {
+      mode: 'dispute-resolution',
+      prNumber: pullRequest.number,
+      disputeContext: {
+        threadId: String(inReplyToId),
+        replyCommentId: String(comment?.id || ''),
+        replyBody: comment?.body || '',
+        replyAuthor: commentAuthor,
+        file: comment?.path || '',
+        line: comment?.line || comment?.original_line
+      }
+    }
+  }
+
   if (context.eventName === 'issue_comment') {
     const comment = context.payload.comment
     const issue = context.payload.issue
@@ -204,7 +253,7 @@ function detectExecutionMode(context: typeof github.context): {
   }
 
   throw new Error(
-    `Unsupported event: ${context.eventName}. This action supports 'pull_request' and 'issue_comment' events only.`
+    `Unsupported event: ${context.eventName}. This action supports 'pull_request', 'issue_comment', and 'pull_request_review_comment' events.`
   )
 }
 

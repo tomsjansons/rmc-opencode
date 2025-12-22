@@ -98,7 +98,9 @@ ${answer}
     } else if (config.execution.mode === 'dispute-resolution') {
       logger.info('Execution mode: Dispute Resolution Only')
 
-      await orchestrator.executeDisputeResolution()
+      await orchestrator.executeDisputeResolution(
+        config.execution.disputeContext
+      )
 
       core.setOutput('review_status', 'disputes_evaluated')
       core.setOutput('issues_found', '0')
