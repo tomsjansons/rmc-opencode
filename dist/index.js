@@ -37846,7 +37846,13 @@ class StateManager {
         return null;
     }
     sanitizeJsonString(jsonStr) {
-        return jsonStr.replace(/`/g, "'");
+        return (jsonStr
+            // Remove trailing commas before } or ]
+            .replace(/,(\s*[}\]])/g, '$1')
+            // Replace backslash-backtick with just single quote
+            .replace(/\\`/g, "'")
+            // Replace standalone backticks with single quotes
+            .replace(/`/g, "'"));
     }
     async detectConcession(body) {
         const cacheKey = this.generateSentimentCacheKey(body);
