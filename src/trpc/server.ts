@@ -1,3 +1,5 @@
+import type { Server } from 'node:http'
+
 import { createHTTPServer } from '@trpc/server/adapters/standalone'
 
 import {
@@ -11,7 +13,7 @@ import { logger } from '../utils/logger.js'
 import { appRouter, type TRPCContext } from './router.js'
 
 export class TRPCServer {
-  private server: ReturnType<typeof createHTTPServer> | null = null
+  private server: Server | null = null
 
   constructor(
     private orchestrator: ReviewOrchestrator,
@@ -43,17 +45,13 @@ export class TRPCServer {
 
   async stop(): Promise<void> {
     if (this.server) {
-      const httpServer = (
-        this.server as unknown as {
-          server: { close: (cb: () => void) => void }
-        }
-      ).server
       await new Promise<void>((resolve) => {
-        httpServer.close(() => {
+        this.server!.close(() => {
           logger.info('tRPC server stopped')
           resolve()
         })
       })
+      this.server = null
     }
   }
 

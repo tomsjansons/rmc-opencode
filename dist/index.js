@@ -106346,13 +106346,13 @@ class TRPCServer {
     }
     async stop() {
         if (this.server) {
-            const httpServer = this.server.server;
             await new Promise((resolve) => {
-                httpServer.close(() => {
+                this.server.close(() => {
                     logger$2.info('tRPC server stopped');
                     resolve();
                 });
             });
+            this.server = null;
         }
     }
     getUrl() {
