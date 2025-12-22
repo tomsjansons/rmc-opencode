@@ -1,5 +1,5 @@
-export const OPENCODE_SERVER_PORT = 3000
-export const OPENCODE_SERVER_HOST = 'localhost'
+export const OPENCODE_SERVER_PORT = 4096
+export const OPENCODE_SERVER_HOST = '127.0.0.1'
 export const OPENCODE_SERVER_URL = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`
 
 export const TRPC_SERVER_PORT = 38291

@@ -4,12 +4,14 @@ import { OPENCODE_SERVER_URL } from './config/constants.js'
 import { parseInputs, validateConfig } from './config/inputs.js'
 import { GitHubAPI } from './github/api.js'
 import { OpenCodeClientImpl } from './opencode/client.js'
+import { OpenCodeServer } from './opencode/server.js'
 import { ReviewOrchestrator } from './review/orchestrator.js'
 import { setupToolsInWorkspace } from './setup/tools.js'
 import { TRPCServer } from './trpc/server.js'
 import { logger } from './utils/logger.js'
 
 export async function run(): Promise<void> {
+  let openCodeServer: OpenCodeServer | null = null
   let trpcServer: TRPCServer | null = null
   let orchestrator: ReviewOrchestrator | null = null
 
@@ -28,6 +30,9 @@ export async function run(): Promise<void> {
 
     logger.info('Setting up OpenCode tools...')
     await setupToolsInWorkspace()
+
+    openCodeServer = new OpenCodeServer(config)
+    await openCodeServer.start()
 
     const github = new GitHubAPI(config)
     const opencode = new OpenCodeClientImpl(OPENCODE_SERVER_URL)
@@ -102,6 +107,9 @@ ${answer}
     }
     if (trpcServer) {
       await trpcServer.stop()
+    }
+    if (openCodeServer) {
+      await openCodeServer.stop()
     }
   }
 }

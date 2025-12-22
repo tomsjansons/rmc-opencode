@@ -1,10 +1,15 @@
-import { spawn, type ChildProcess } from 'child_process'
-import { writeFileSync, mkdirSync, unlinkSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { logger } from '../utils/logger.js'
-import { OpenCodeError } from '../utils/errors.js'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import {
+  OPENCODE_SERVER_HOST,
+  OPENCODE_SERVER_PORT
+} from '../config/constants.js'
 import type { ReviewConfig } from '../review/types.js'
+import { OpenCodeError } from '../utils/errors.js'
+import { logger } from '../utils/logger.js'
 
 type ServerStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
 
@@ -25,7 +30,6 @@ export class OpenCodeServer {
   private serverProcess: ChildProcess | null = null
   private status: ServerStatus = 'stopped'
   private readonly healthCheckUrl: string
-  private readonly serverPort = 4096
   private readonly maxStartupAttempts = 3
   private readonly healthCheckIntervalMs = 1000
   private readonly healthCheckTimeoutMs = 30000
@@ -33,7 +37,7 @@ export class OpenCodeServer {
   private configFilePath: string | null = null
 
   constructor(private config: ReviewConfig) {
-    this.healthCheckUrl = `http://127.0.0.1:${this.serverPort}`
+    this.healthCheckUrl = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`
   }
 
   async start(): Promise<void> {
@@ -123,13 +127,19 @@ export class OpenCodeServer {
     this.configFilePath = this.createConfigFile()
 
     logger.debug(
-      `Starting OpenCode server on port ${this.serverPort} with model ${this.config.opencode.model}`
+      `Starting OpenCode server on port ${OPENCODE_SERVER_PORT} with model ${this.config.opencode.model}`
     )
     logger.debug(`Using config file: ${this.configFilePath}`)
 
     this.serverProcess = spawn(
       'opencode',
-      ['serve', '--port', String(this.serverPort), '--hostname', '127.0.0.1'],
+      [
+        'serve',
+        '--port',
+        String(OPENCODE_SERVER_PORT),
+        '--hostname',
+        OPENCODE_SERVER_HOST
+      ],
       {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
