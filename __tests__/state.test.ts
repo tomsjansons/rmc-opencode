@@ -24,7 +24,7 @@ const mockOctokit = {
   }
 }
 
-global.fetch = mockFetch as any
+global.fetch = mockFetch as typeof global.fetch
 
 jest.unstable_mockModule('@actions/cache', () => ({
   saveCache: mockSaveCache,

@@ -50,10 +50,13 @@
     "@trpc/client": "^11.8.1",
     "@trpc/server": "^11.8.1",
     "opencode-ai": "^1.0.186",
-    "superjson": "^2.2.6"
+    "superjson": "^2.2.6",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@eslint/compat": "^1.4.0",
+    "@eslint/eslintrc": "^3.3.3",
+    "@eslint/js": "^9.39.2",
     "@github/local-action": "^6.0.2",
     "@jest/globals": "^30.2.0",
     "@rollup/plugin-commonjs": "^29.0.0",
@@ -71,6 +74,7 @@
     "eslint-plugin-jest": "^29.2.1",
     "eslint-plugin-prettier": "^5.5.4",
     "glob": "^13.0.0",
+    "globals": "^16.5.0",
     "jest": "^30.2.0",
     "make-coverage-badge": "^1.2.0",
     "prettier": "^3.7.4",

@@ -24,11 +24,22 @@ describe('Configuration Parser', () => {
           problemThreshold: 5,
           elevationThreshold: 5
         },
+        review: {
+          timeoutMs: 30 * 60 * 1000,
+          maxRetries: 1
+        },
         github: {
           token: 'test-token',
           owner: 'test-owner',
           repo: 'test-repo',
           prNumber: 123
+        },
+        dispute: {
+          enableHumanEscalation: false,
+          humanReviewers: []
+        },
+        execution: {
+          mode: 'full-review'
         }
       }
 
@@ -118,11 +129,22 @@ describe('Configuration Parser', () => {
           problemThreshold: 5,
           elevationThreshold: 5
         },
+        review: {
+          timeoutMs: 30 * 60 * 1000,
+          maxRetries: 1
+        },
         github: {
           token: 'test-token',
           owner: 'test-owner',
           repo: 'test-repo',
           prNumber: 0 // Invalid
+        },
+        dispute: {
+          enableHumanEscalation: false,
+          humanReviewers: []
+        },
+        execution: {
+          mode: 'full-review'
         }
       }
 
@@ -142,11 +164,22 @@ describe('Configuration Parser', () => {
           problemThreshold: 5,
           elevationThreshold: 5
         },
+        review: {
+          timeoutMs: 30 * 60 * 1000,
+          maxRetries: 1
+        },
         github: {
           token: '',
           owner: 'test-owner',
           repo: 'test-repo',
           prNumber: 123
+        },
+        dispute: {
+          enableHumanEscalation: false,
+          humanReviewers: []
+        },
+        execution: {
+          mode: 'full-review'
         }
       }
 
