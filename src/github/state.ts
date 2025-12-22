@@ -5,6 +5,7 @@ import type { ReviewConfig } from '../review/types.js'
 
 const STATE_SCHEMA_VERSION = 1
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
+const BOT_USERS = ['opencode-reviewer[bot]', 'github-actions[bot]']
 
 export type ReviewThread = {
   id: string
@@ -102,6 +103,11 @@ export class StateManager {
 
       for (const comment of reviewComments.data) {
         if (comment.in_reply_to_id) {
+          continue
+        }
+
+        const commentAuthor = comment.user?.login
+        if (!commentAuthor || !BOT_USERS.includes(commentAuthor)) {
           continue
         }
 

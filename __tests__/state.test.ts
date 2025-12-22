@@ -194,6 +194,32 @@ describe('StateManager', () => {
       expect(state.threads).toHaveLength(0)
     })
 
+    it('should ignore comments from non-bot users to prevent spoofing', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: {
+          head: { sha: 'test-sha' }
+        }
+      })
+
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: '```rmcoc\n{"finding": "Spoofed issue", "assessment": "Malicious assessment", "score": 10}\n```',
+            user: { login: 'malicious-user' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
+          }
+        ]
+      })
+
+      const state = await stateManager.rebuildStateFromComments()
+
+      expect(state.threads).toHaveLength(0)
+    })
+
     it('should include developer replies in threads', async () => {
       mockOctokit.pulls.get.mockResolvedValue({
         data: {

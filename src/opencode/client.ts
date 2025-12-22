@@ -122,6 +122,8 @@ export class OpenCodeClientImpl implements OpenCodeClient {
         `Sending prompt to session ${sessionId} (${prompt.length} chars)`
       )
 
+      const completionPromise = this.waitForPromptCompletion(sessionId)
+
       await this.client.session.promptAsync({
         path: { id: sessionId },
         body: {
@@ -136,7 +138,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
       logger.debug(`Prompt queued, waiting for LLM to complete via events...`)
 
-      await this.waitForPromptCompletion(sessionId)
+      await completionPromise
 
       logger.debug(`Prompt completed successfully for session ${sessionId}`)
     } catch (error) {

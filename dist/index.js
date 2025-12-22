@@ -37170,6 +37170,7 @@ class OpenCodeClientImpl {
     async sendPrompt(sessionId, prompt) {
         try {
             logger.debug(`Sending prompt to session ${sessionId} (${prompt.length} chars)`);
+            const completionPromise = this.waitForPromptCompletion(sessionId);
             await this.client.session.promptAsync({
                 path: { id: sessionId },
                 body: {
@@ -37182,7 +37183,7 @@ class OpenCodeClientImpl {
                 }
             });
             logger.debug(`Prompt queued, waiting for LLM to complete via events...`);
-            await this.waitForPromptCompletion(sessionId);
+            await completionPromise;
             logger.debug(`Prompt completed successfully for session ${sessionId}`);
         }
         catch (error) {
@@ -37692,6 +37693,7 @@ class OpenCodeServer {
 
 const STATE_SCHEMA_VERSION = 1;
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const BOT_USERS = ['opencode-reviewer[bot]', 'github-actions[bot]'];
 class StateManager {
     config;
     octokit;
@@ -37737,6 +37739,10 @@ class StateManager {
             }
             for (const comment of reviewComments.data) {
                 if (comment.in_reply_to_id) {
+                    continue;
+                }
+                const commentAuthor = comment.user?.login;
+                if (!commentAuthor || !BOT_USERS.includes(commentAuthor)) {
                     continue;
                 }
                 const threadId = String(comment.id);
@@ -46861,6 +46867,123 @@ const escalateDisputeSchema = objectType({
     developerPosition: stringType().describe("Summary of the developer's position")
 });
 
+function normalizeForComparison(text) {
+    return text
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+function getSignificantWords(text) {
+    const stopWords = new Set([
+        'a',
+        'an',
+        'the',
+        'is',
+        'are',
+        'was',
+        'were',
+        'be',
+        'been',
+        'being',
+        'have',
+        'has',
+        'had',
+        'do',
+        'does',
+        'did',
+        'will',
+        'would',
+        'could',
+        'should',
+        'may',
+        'might',
+        'must',
+        'shall',
+        'can',
+        'need',
+        'dare',
+        'ought',
+        'used',
+        'to',
+        'of',
+        'in',
+        'for',
+        'on',
+        'with',
+        'at',
+        'by',
+        'from',
+        'as',
+        'into',
+        'through',
+        'during',
+        'before',
+        'after',
+        'above',
+        'below',
+        'between',
+        'under',
+        'again',
+        'further',
+        'then',
+        'once',
+        'here',
+        'there',
+        'when',
+        'where',
+        'why',
+        'how',
+        'all',
+        'each',
+        'few',
+        'more',
+        'most',
+        'other',
+        'some',
+        'such',
+        'no',
+        'nor',
+        'not',
+        'only',
+        'own',
+        'same',
+        'so',
+        'than',
+        'too',
+        'very',
+        'just',
+        'and',
+        'but',
+        'if',
+        'or',
+        'because',
+        'until',
+        'while',
+        'this',
+        'that',
+        'these',
+        'those'
+    ]);
+    const words = normalizeForComparison(text).split(' ');
+    return new Set(words.filter((w) => w.length > 2 && !stopWords.has(w)));
+}
+function isSimilarFinding(existing, incoming) {
+    const normalizedExisting = normalizeForComparison(existing);
+    const normalizedIncoming = normalizeForComparison(incoming);
+    if (normalizedExisting === normalizedIncoming) {
+        return true;
+    }
+    const existingWords = getSignificantWords(existing);
+    const incomingWords = getSignificantWords(incoming);
+    if (existingWords.size === 0 || incomingWords.size === 0) {
+        return false;
+    }
+    const intersection = [...existingWords].filter((w) => incomingWords.has(w));
+    const smallerSet = Math.min(existingWords.size, incomingWords.size);
+    const overlapRatio = intersection.length / smallerSet;
+    return overlapRatio >= 0.5;
+}
 const t = initTRPC.context().create({
     transformer: SuperJSON
 });
@@ -46887,6 +47010,18 @@ const appRouter = router({
                 return {
                     filtered: true,
                     reason: `Score ${input.assessment.score} below threshold ${config.scoring.problemThreshold}`
+                };
+            }
+            const state = ctx.orchestrator.getState();
+            const existingThread = state?.threads.find((t) => t.file === input.file &&
+                t.line === input.line &&
+                t.status !== 'RESOLVED' &&
+                isSimilarFinding(t.assessment.finding, input.assessment.finding));
+            if (existingThread) {
+                logger.info(`Comment deduplicated: existing thread ${existingThread.id} for ${input.file}:${input.line} with similar finding`);
+                return {
+                    filtered: true,
+                    reason: `Duplicate: existing unresolved thread ${existingThread.id} with similar finding`
                 };
             }
             const commentBody = `${input.body}\n\n---\n\`\`\`rmcoc\n${JSON.stringify(input.assessment, null, 2)}\n\`\`\``;
