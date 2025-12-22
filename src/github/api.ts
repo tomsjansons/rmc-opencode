@@ -71,14 +71,16 @@ export class GitHubAPI {
         `Fetching PR files for ${this.owner}/${this.repo}#${this.prNumber}`
       )
 
-      const response = await this.octokit.pulls.listFiles({
-        owner: this.owner,
-        repo: this.repo,
-        pull_number: this.prNumber,
-        per_page: 100
-      })
-
-      const files = response.data.map((file) => file.filename)
+      const files = await this.octokit.paginate(
+        this.octokit.pulls.listFiles,
+        {
+          owner: this.owner,
+          repo: this.repo,
+          pull_number: this.prNumber,
+          per_page: 100
+        },
+        (response) => response.data.map((file) => file.filename)
+      )
 
       logger.info(`Fetched ${files.length} changed files`)
 

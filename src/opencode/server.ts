@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   OPENCODE_SERVER_HOST,
@@ -10,6 +11,12 @@ import {
 import type { ReviewConfig } from '../review/types.js'
 import { OpenCodeError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
+
+function getOpenCodeCLIPath(): string {
+  const __filename = fileURLToPath(import.meta.url)
+  const __dirname = dirname(__filename)
+  return join(__dirname, '..', '..', 'node_modules', '.bin', 'opencode')
+}
 
 type ServerStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
 
@@ -126,13 +133,16 @@ export class OpenCodeServer {
 
     this.configFilePath = this.createConfigFile()
 
+    const opencodePath = getOpenCodeCLIPath()
+
     logger.debug(
       `Starting OpenCode server on port ${OPENCODE_SERVER_PORT} with model ${this.config.opencode.model}`
     )
+    logger.debug(`Using CLI path: ${opencodePath}`)
     logger.debug(`Using config file: ${this.configFilePath}`)
 
     this.serverProcess = spawn(
-      'opencode',
+      opencodePath,
       [
         'serve',
         '--port',

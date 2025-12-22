@@ -8,29 +8,16 @@ implementations when comparing the actual codebase against the requirements in
 
 ## Critical Missing Features
 
-### 1. OpenCode Server Management Not Implemented
+### ~~1. OpenCode Server Management Not Implemented~~ - FIXED
 
-**Requirement:** The action should manage the OpenCode server lifecycle within
-the runner (project-description.md §4.1, §5 Phase 1)
+**Status:** ✅ Fixed
 
-**Current State:** While `src/opencode/server.ts` exists with full
-implementation including `start()`, `stop()`, `waitForHealthy()`, the server is
-**never started** in `main.ts`. The code creates `OpenCodeClientImpl` pointing
-to `OPENCODE_SERVER_URL` but never starts the server.
+**Changes Made:**
 
-**Location:** `src/main.ts:33-34`
-
-**Impact:** High - Action will fail because OpenCode server is not running
-
-**Fix Required:**
-
-```typescript
-// In main.ts, before creating OpenCodeClient:
-const server = new OpenCodeServer(config)
-await server.start()
-// ... later in finally block:
-await server.stop()
-```
+- Updated `src/config/constants.ts` to use port `4096` and host `127.0.0.1`
+- Updated `src/opencode/server.ts` to use constants instead of hardcoded values
+- Updated `src/main.ts` to import `OpenCodeServer`, start it before creating the
+  client, and stop it in the `finally` block
 
 ### 2. Score Elevation Threshold Not Passed to Agent
 
@@ -119,16 +106,15 @@ Missing tests for:
 
 ## API/Feature Gaps
 
-### 6. Missing GitHub API Pagination
+### ~~6. Missing GitHub API Pagination~~ - FIXED
 
-**Requirement:** GitHubAPI should handle pagination for large PRs
-(project-tasks.md §3.3)
+**Status:** ✅ Fixed
 
-**Current State:** `src/github/api.ts` has:
+**Changes Made:**
 
-- `getPRFiles()` limited to 100 files with no pagination
-
-**Impact:** Low-Medium - Large PRs with >100 files may miss some files
+- Updated `getPRFiles()` in `src/github/api.ts` to use Octokit's `paginate()`
+  helper
+- Now automatically fetches all pages of PR files, handling PRs with >100 files
 
 ### 7. Comments Module Not Created
 
@@ -153,31 +139,16 @@ No dedicated module exists for:
 
 ## Bugs and Contradictions
 
-### 8. Private Method Called from External Class
+### ~~8. Private Method Called from External Class~~ - FIXED
 
-**Requirement:** Proper encapsulation and visibility
+**Status:** ✅ Fixed
 
-**Current State:** In `orchestrator.ts:148`:
+**Changes Made:**
 
-```typescript
-private async executeDisputeResolution(): Promise<void> {
-```
-
-But in `main.ts:82`:
-
-```typescript
-await orchestrator.executeDisputeResolution()
-```
-
-The method is marked `private` but called from `main.ts`. This works in
-JavaScript at runtime but:
-
-- Violates TypeScript visibility rules
-- TypeScript compiler should error on this
-- May indicate the method should be public or the call should be removed
-
-**Impact:** High - TypeScript compilation should fail (may work due to build
-config)
+- Changed `executeDisputeResolution` from `private` to public in
+  `src/review/orchestrator.ts`
+- Fixed related TypeScript errors with `latestReply` potentially being undefined
+  by adding proper null checks
 
 ### 9. Event Trigger Handling Incomplete
 
@@ -197,26 +168,7 @@ But does not check:
 
 **Impact:** Low - May run on draft PRs unnecessarily
 
-### 10. Cache Key Missing Commit SHA
-
-**Requirement:** State should track which commit was last reviewed
-(project-description.md §3.2)
-
-**Current State:** Cache key is:
-
-```typescript
-;`${CACHE_VERSION}-pr-review-state-${owner}-${repo}-${prNumber}`
-```
-
-The `lastCommitSha` is stored IN the state but not part of the cache key. This
-means:
-
-- Cache restore might return stale state from old commits
-- New commits might get incorrect "previous issues" context
-
-**Impact:** Medium - State may be stale after cache restore
-
-### 11. Timeout Race Condition
+### 10. Timeout Race Condition
 
 **Current State:** In `orchestrator.ts:97-111`:
 
@@ -238,7 +190,7 @@ could cause issues in long-running processes.
 
 ## Minor Issues
 
-### 12. External Intelligence Tools Not Configurable
+### 11. External Intelligence Tools Not Configurable
 
 **Requirement:** Optional web_search and web_fetch tools (project-description.md
 §3.4)
@@ -251,7 +203,7 @@ config in `server.ts`, but:
 
 **Impact:** Low - Partial implementation, webfetch works
 
-### 13. Hardcoded Bot Usernames
+### 12. Hardcoded Bot Usernames
 
 **Current State:** In `state.ts:254-255`:
 
@@ -267,7 +219,7 @@ filter won't work correctly.
 
 **Impact:** Low - Works for standard setup
 
-### 14. Missing Rate Limit Handling
+### 13. Missing Rate Limit Handling
 
 **Requirement:** Handle GitHub API rate limiting with exponential backoff
 (project-tasks.md §3.3)
@@ -277,7 +229,7 @@ on rate limits without retry.
 
 **Impact:** Medium for large/active repos
 
-### 15. Review State Not Saved After Each Tool Call
+### 14. Review State Not Saved After Each Tool Call
 
 **Requirement:** "Save state after each tool invocation that modifies it"
 (project-tasks.md §3.1)
@@ -292,23 +244,27 @@ file each time. No batching or deferred save mechanism.
 
 ## Summary
 
-| Category            | Count  | Severity |
-| :------------------ | :----- | :------- |
-| Critical Missing    | 2      | High     |
-| Missing Infra       | 2      | Medium   |
-| Documentation       | 1      | High     |
-| API/Feature Gaps    | 2      | Low      |
-| Bugs/Contradictions | 4      | Varies   |
-| Minor Issues        | 4      | Low      |
-| **Total**           | **15** |          |
+| Category                | Count         | Severity |
+| :---------------------- | :------------ | :------- |
+| Critical Missing        | ~~2~~ 1       | High     |
+| Missing Infra           | 2             | Medium   |
+| Documentation           | 1             | High     |
+| API/Feature Gaps        | ~~2~~ 1       | Low      |
+| Bugs/Contradictions     | ~~4~~ 2       | Varies   |
+| Minor Issues            | 4             | Low      |
+| **Total**               | ~~15~~ **11** |          |
+| **Fixed**               | **3**         |          |
+| **Removed (non-issue)** | **1**         |          |
 
 ## Recommended Priority
 
-1. **Fix OpenCode server startup** - Action won't work without this
-2. **Fix `executeDisputeResolution` visibility** - Compilation/runtime error
-3. **Update README.md** - Users cannot adopt without docs
-4. **Add CI/CD workflows** - Quality assurance
-5. **Pass elevation threshold to prompts** - Minor enhancement
+1. ~~**Fix OpenCode server startup** - Action won't work without this~~ ✅ DONE
+2. ~~**Fix `executeDisputeResolution` visibility** - Compilation/runtime error~~
+   ✅ DONE
+3. ~~**Fix GitHub API pagination** - Large PRs now supported~~ ✅ DONE
+4. **Update README.md** - Users cannot adopt without docs
+5. **Add CI/CD workflows** - Quality assurance
+6. **Pass elevation threshold to prompts** - Minor enhancement
 
 ## Clarifications
 
@@ -346,3 +302,17 @@ This is the correct approach - the agent applies the elevation when assigning
 scores, which is more flexible than enforcing it in the tool layer.
 
 **Location:** `src/review/prompts.ts` - PASS_3 and SCORING_RUBRIC
+
+### Cache Key Design - Implemented Correctly
+
+The cache key intentionally does NOT include the commit SHA. The cache stores
+the previous review state so the agent can:
+
+- Compare current code against prior findings
+- Perform fix verification (checking if previous issues were addressed)
+- Handle dispute resolution with full context of prior comments
+
+The `lastCommitSha` is stored INSIDE the state to track what was previously
+reviewed, enabling the agent to identify what changed between runs.
+
+**Location:** `src/github/state.ts` - `getCacheKey()` and `ReviewState` type

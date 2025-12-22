@@ -145,7 +145,7 @@ export class ReviewOrchestrator {
     })
   }
 
-  private async executeDisputeResolution(): Promise<void> {
+  async executeDisputeResolution(): Promise<void> {
     await logger.group('Dispute Resolution', async () => {
       const threadsWithReplies =
         await this.stateManager.getThreadsWithDeveloperReplies()
@@ -160,15 +160,15 @@ export class ReviewOrchestrator {
       )
 
       for (const thread of threadsWithReplies) {
-        if (
-          !thread.developer_replies ||
-          thread.developer_replies.length === 0
-        ) {
+        const replies = thread.developer_replies
+        if (!replies || replies.length === 0) {
           continue
         }
 
-        const latestReply =
-          thread.developer_replies[thread.developer_replies.length - 1]
+        const latestReply = replies[replies.length - 1]
+        if (!latestReply) {
+          continue
+        }
 
         const classification = await this.stateManager.classifyDeveloperReply(
           thread.assessment.finding,
