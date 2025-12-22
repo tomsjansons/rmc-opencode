@@ -272,6 +272,10 @@ export class StateManager {
     )
   }
 
+  private sanitizePromptInput(input: string): string {
+    return input.replace(/"""/g, '\\"\\"\\"')
+  }
+
   async detectConcession(body: string): Promise<boolean> {
     const cacheKey = this.generateSentimentCacheKey(body)
 
@@ -357,6 +361,7 @@ export class StateManager {
   }
 
   private async analyzeCommentSentiment(commentBody: string): Promise<boolean> {
+    const sanitizedBody = this.sanitizePromptInput(commentBody)
     const prompt = `You are analyzing a code review comment to determine if the developer is conceding to a reviewer's suggestion.
 
 A concession means the developer:
@@ -373,7 +378,7 @@ A concession does NOT include:
 
 Comment to analyze:
 """
-${commentBody}
+${sanitizedBody}
 """
 
 Respond with ONLY "true" if this is a concession, or "false" if it is not.`
@@ -491,13 +496,15 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
     originalFinding: string,
     replyBody: string
   ): Promise<'acknowledgment' | 'dispute' | 'question' | 'out_of_scope'> {
+    const sanitizedFinding = this.sanitizePromptInput(originalFinding)
+    const sanitizedReply = this.sanitizePromptInput(replyBody)
     const prompt = `You are analyzing a developer's response to a code review comment to classify their intent.
 
-Original finding: "${originalFinding}"
+Original finding: "${sanitizedFinding}"
 
 Developer's response:
 """
-${replyBody}
+${sanitizedReply}
 """
 
 Classify the response as ONE of the following:

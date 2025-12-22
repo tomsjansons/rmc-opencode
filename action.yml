@@ -42,7 +42,10 @@ inputs:
     required: false
     default: 'false'
   github_token:
-    description: 'GitHub token for API access'
+    description:
+      'GitHub token for API access. The default GITHUB_TOKEN works for most
+      features. To auto-resolve review threads (mark as resolved in GitHub UI),
+      use a PAT with repo scope.'
     required: true
     default: ${{ github.token }}
   enable_human_escalation:

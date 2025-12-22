@@ -192,9 +192,19 @@ export class GitHubAPI {
 
       logger.debug(`GraphQL: Resolved review thread ${threadId}`)
     } catch (error) {
-      logger.warning(
-        `Failed to resolve review thread via GraphQL: ${error instanceof Error ? error.message : String(error)}`
-      )
+      const errorMessage =
+        error instanceof Error ? error.message : String(error)
+
+      if (errorMessage.includes('Resource not accessible by integration')) {
+        logger.debug(
+          `Cannot auto-resolve thread via GraphQL - requires a PAT with elevated permissions. ` +
+            `The thread has been marked as resolved via comment.`
+        )
+      } else {
+        logger.warning(
+          `Failed to resolve review thread via GraphQL: ${errorMessage}`
+        )
+      }
     }
   }
 

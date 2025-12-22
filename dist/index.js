@@ -35384,7 +35384,14 @@ class GitHubAPI {
             logger.debug(`GraphQL: Resolved review thread ${threadId}`);
         }
         catch (error) {
-            logger.warning(`Failed to resolve review thread via GraphQL: ${error instanceof Error ? error.message : String(error)}`);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (errorMessage.includes('Resource not accessible by integration')) {
+                logger.debug(`Cannot auto-resolve thread via GraphQL - requires a PAT with elevated permissions. ` +
+                    `The thread has been marked as resolved via comment.`);
+            }
+            else {
+                logger.warning(`Failed to resolve review thread via GraphQL: ${errorMessage}`);
+            }
         }
     }
     async getReviewThreadId(commentId) {
@@ -37870,6 +37877,9 @@ class StateManager {
             // Replace standalone backticks with single quotes
             .replace(/`/g, "'"));
     }
+    sanitizePromptInput(input) {
+        return input.replace(/"""/g, '\\"\\"\\"');
+    }
     async detectConcession(body) {
         const cacheKey = this.generateSentimentCacheKey(body);
         const cachedResult = this.sentimentCache.get(cacheKey);
@@ -37941,6 +37951,7 @@ class StateManager {
         return data.choices?.[0]?.message?.content?.trim().toLowerCase() ?? null;
     }
     async analyzeCommentSentiment(commentBody) {
+        const sanitizedBody = this.sanitizePromptInput(commentBody);
         const prompt = `You are analyzing a code review comment to determine if the developer is conceding to a reviewer's suggestion.
 
 A concession means the developer:
@@ -37957,7 +37968,7 @@ A concession does NOT include:
 
 Comment to analyze:
 """
-${commentBody}
+${sanitizedBody}
 """
 
 Respond with ONLY "true" if this is a concession, or "false" if it is not.`;
@@ -38037,13 +38048,15 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`;
         }
     }
     async classifyDeveloperReply(originalFinding, replyBody) {
+        const sanitizedFinding = this.sanitizePromptInput(originalFinding);
+        const sanitizedReply = this.sanitizePromptInput(replyBody);
         const prompt = `You are analyzing a developer's response to a code review comment to classify their intent.
 
-Original finding: "${originalFinding}"
+Original finding: "${sanitizedFinding}"
 
 Developer's response:
 """
-${replyBody}
+${sanitizedReply}
 """
 
 Classify the response as ONE of the following:
