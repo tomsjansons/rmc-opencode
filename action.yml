@@ -41,6 +41,18 @@ inputs:
     description: 'GitHub token for API access'
     required: true
     default: ${{ github.token }}
+  enable_human_escalation:
+    description:
+      'Enable escalation to human reviewers for unresolved disputes (requires
+      human_reviewers)'
+    required: false
+    default: 'false'
+  human_reviewers:
+    description:
+      'Comma-separated list of GitHub usernames to tag on escalated disputes
+      (e.g., "alice,bob")'
+    required: false
+    default: ''
 
 # Define your outputs here.
 outputs:

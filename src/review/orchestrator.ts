@@ -62,8 +62,9 @@ export class ReviewOrchestrator {
 
           if (hasExistingIssues) {
             logger.info(
-              'Found existing unresolved issues - running fix verification'
+              'Found existing unresolved issues - running fix verification and dispute resolution'
             )
+            await this.executeDisputeResolution()
             await this.executeFixVerification()
           }
 
@@ -141,6 +142,72 @@ export class ReviewOrchestrator {
       )
 
       await this.sendPromptToOpenCode(prompt)
+    })
+  }
+
+  private async executeDisputeResolution(): Promise<void> {
+    await logger.group('Dispute Resolution', async () => {
+      const threadsWithReplies =
+        await this.stateManager.getThreadsWithDeveloperReplies()
+
+      if (threadsWithReplies.length === 0) {
+        logger.info('No developer replies to evaluate')
+        return
+      }
+
+      logger.info(
+        `Evaluating ${threadsWithReplies.length} threads with developer replies`
+      )
+
+      for (const thread of threadsWithReplies) {
+        if (
+          !thread.developer_replies ||
+          thread.developer_replies.length === 0
+        ) {
+          continue
+        }
+
+        const latestReply =
+          thread.developer_replies[thread.developer_replies.length - 1]
+
+        const classification = await this.stateManager.classifyDeveloperReply(
+          thread.assessment.finding,
+          latestReply.body
+        )
+
+        logger.info(
+          `Thread ${thread.id} has ${classification} response from ${latestReply.author}`
+        )
+
+        let prompt: string
+
+        if (classification === 'question') {
+          logger.info(
+            'Developer asked for clarification - using Q&A mode for detailed explanation'
+          )
+          prompt = REVIEW_PROMPTS.CLARIFY_REVIEW_FINDING(
+            thread.assessment.finding,
+            thread.assessment.assessment,
+            latestReply.body,
+            thread.file,
+            thread.line
+          )
+        } else {
+          prompt = REVIEW_PROMPTS.DISPUTE_EVALUATION(
+            thread.id,
+            thread.assessment.finding,
+            thread.assessment.assessment,
+            thread.score,
+            thread.file,
+            thread.line,
+            latestReply.body,
+            classification,
+            this.config.dispute.enableHumanEscalation
+          )
+        }
+
+        await this.sendPromptToOpenCode(prompt)
+      }
     })
   }
 
@@ -383,7 +450,7 @@ ${diff.length > 5000 ? diff.substring(0, 5000) + '\n... (truncated)' : diff}
 
   async updateThreadStatus(
     threadId: string,
-    status: 'PENDING' | 'RESOLVED' | 'DISPUTED'
+    status: 'PENDING' | 'RESOLVED' | 'DISPUTED' | 'ESCALATED'
   ): Promise<void> {
     await this.stateManager.updateThreadStatus(threadId, status)
 
@@ -435,5 +502,54 @@ ${diff.length > 5000 ? diff.substring(0, 5000) + '\n... (truncated)' : diff}
 
     return this.reviewState.threads.filter((t) => t.status === 'RESOLVED')
       .length
+  }
+
+  async executeQuestionAnswering(): Promise<string> {
+    return await logger.group('Answering Developer Question', async () => {
+      const questionContext = this.config.execution.questionContext
+
+      if (!questionContext) {
+        throw new OrchestratorError('No question context provided')
+      }
+
+      logger.info(
+        `Question from ${questionContext.author}: "${questionContext.question}"`
+      )
+
+      if (questionContext.fileContext) {
+        logger.info(
+          `Context: ${questionContext.fileContext.path}${questionContext.fileContext.line ? `:${questionContext.fileContext.line}` : ''}`
+        )
+      }
+
+      const prContext = await this.github.getPRContext()
+
+      const sessionId = await this.ensureSession()
+
+      logger.info('Injecting question-answering system prompt')
+      await this.opencode.sendSystemPrompt(
+        sessionId,
+        REVIEW_PROMPTS.QUESTION_ANSWERING_SYSTEM
+      )
+
+      const prompt = REVIEW_PROMPTS.ANSWER_QUESTION(
+        questionContext.question,
+        questionContext.author,
+        questionContext.fileContext,
+        prContext.files.length > 0 ? prContext : undefined
+      )
+
+      logger.info('Sending question to OpenCode agent')
+
+      const response = await this.opencode.sendPromptAndGetResponse(
+        sessionId,
+        prompt
+      )
+
+      logger.info('Received answer from agent')
+      logger.debug(`Answer length: ${response.length} characters`)
+
+      return response
+    })
   }
 }

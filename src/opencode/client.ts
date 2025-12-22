@@ -9,6 +9,7 @@ export interface OpenCodeClient {
   deleteSession(sessionId: string): Promise<void>
   sendSystemPrompt(sessionId: string, systemPrompt: string): Promise<void>
   sendPrompt(sessionId: string, prompt: string): Promise<void>
+  sendPromptAndGetResponse(sessionId: string, prompt: string): Promise<string>
   getCurrentSessionId(): string | null
 }
 
@@ -130,6 +131,48 @@ export class OpenCodeClientImpl implements OpenCodeClient {
     } catch (error) {
       throw new OpenCodeError(
         `Failed to send prompt: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async sendPromptAndGetResponse(
+    sessionId: string,
+    prompt: string
+  ): Promise<string> {
+    try {
+      logger.debug(
+        `Sending prompt to session ${sessionId} and awaiting response (${prompt.length} chars)`
+      )
+
+      const response = await this.client.session.prompt({
+        path: { id: sessionId },
+        body: {
+          parts: [
+            {
+              type: 'text',
+              text: prompt
+            }
+          ]
+        }
+      })
+
+      if (!response.data) {
+        throw new OpenCodeError('Failed to send prompt: no response data')
+      }
+
+      const textParts = response.data.parts
+        .filter((part) => part.type === 'text')
+        .map((part) => (part.type === 'text' ? part.text : ''))
+        .join('\n')
+
+      logger.debug(
+        `Received response from session ${sessionId} (${textParts.length} chars)`
+      )
+
+      return textParts
+    } catch (error) {
+      throw new OpenCodeError(
+        `Failed to send prompt and get response: ${error instanceof Error ? error.message : String(error)}`
       )
     }
   }

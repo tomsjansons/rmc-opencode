@@ -32,3 +32,9 @@ export const submitPassResultsSchema = z.object({
   summary: z.string().describe('Summary of what was reviewed'),
   hasBlockingIssues: z.boolean().describe('Whether blocking issues were found')
 })
+
+export const escalateDisputeSchema = z.object({
+  threadId: z.string().describe('Thread ID to escalate'),
+  agentPosition: z.string().describe("Summary of the agent's position"),
+  developerPosition: z.string().describe("Summary of the developer's position")
+})

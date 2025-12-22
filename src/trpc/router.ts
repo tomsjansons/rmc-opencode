@@ -5,6 +5,7 @@ import type { GitHubAPI } from '../github/api.js'
 import type { ReviewOrchestrator } from '../review/orchestrator.js'
 import { logger } from '../utils/logger.js'
 import {
+  escalateDisputeSchema,
   postReviewCommentSchema,
   replyToThreadSchema,
   resolveThreadSchema,
@@ -92,6 +93,11 @@ export const appRouter = router({
         await ctx.github.replyToComment(input.threadId, input.body)
 
         if (input.isConcession) {
+          await ctx.orchestrator.updateThreadStatus(input.threadId, 'RESOLVED')
+          logger.info(
+            `Thread ${input.threadId} marked as RESOLVED (agent conceded)`
+          )
+        } else {
           await ctx.orchestrator.updateThreadStatus(input.threadId, 'DISPUTED')
           logger.info(`Thread ${input.threadId} marked as DISPUTED`)
         }
@@ -108,6 +114,47 @@ export const appRouter = router({
         await ctx.orchestrator.updateThreadStatus(input.threadId, 'RESOLVED')
 
         logger.info(`Thread ${input.threadId} resolved: ${input.reason}`)
+
+        return { success: true }
+      }),
+
+    escalateDispute: publicProcedure
+      .input(escalateDisputeSchema)
+      .mutation(async ({ ctx, input }) => {
+        logger.debug(
+          `tRPC: github.escalateDispute called for ${input.threadId}`
+        )
+
+        const config = ctx.orchestrator.getConfig()
+
+        if (!config.dispute.enableHumanEscalation) {
+          logger.warning(
+            'Human escalation is not enabled - escalation request ignored'
+          )
+          return {
+            success: false,
+            reason: 'Human escalation is not enabled in configuration'
+          }
+        }
+
+        if (config.dispute.humanReviewers.length === 0) {
+          logger.warning('No human reviewers configured for escalation')
+          return {
+            success: false,
+            reason: 'No human reviewers configured'
+          }
+        }
+
+        await ctx.github.escalateToHumanReviewers(
+          input.threadId,
+          input.agentPosition,
+          input.developerPosition,
+          config.dispute.humanReviewers
+        )
+
+        await ctx.orchestrator.updateThreadStatus(input.threadId, 'ESCALATED')
+
+        logger.info(`Thread ${input.threadId} escalated to human reviewers`)
 
         return { success: true }
       })

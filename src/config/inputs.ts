@@ -1,6 +1,10 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
-import type { ReviewConfig } from '../review/types.js'
+import type {
+  ExecutionMode,
+  QuestionContext,
+  ReviewConfig
+} from '../review/types.js'
 
 export function parseInputs(): ReviewConfig {
   const apiKey = core.getInput('opencode_api_key', { required: true })
@@ -42,14 +46,23 @@ export function parseInputs(): ReviewConfig {
 
   const githubToken = core.getInput('github_token', { required: true })
 
-  const context = github.context
-  const prNumber = context.payload.pull_request?.number
+  const enableHumanEscalation = core.getBooleanInput(
+    'enable_human_escalation',
+    {
+      required: false
+    }
+  )
 
-  if (!prNumber) {
-    throw new Error(
-      'This action can only be run on pull_request events. No PR number found in context.'
-    )
-  }
+  const humanReviewersInput = core.getInput('human_reviewers', {
+    required: false
+  })
+  const humanReviewers = humanReviewersInput
+    ? humanReviewersInput.split(',').map((r) => r.trim())
+    : []
+
+  const context = github.context
+
+  const { mode, prNumber, questionContext } = detectExecutionMode(context)
 
   const owner = context.repo.owner
   const repo = context.repo.repo
@@ -81,8 +94,93 @@ export function parseInputs(): ReviewConfig {
       owner,
       repo,
       prNumber
+    },
+    dispute: {
+      enableHumanEscalation,
+      humanReviewers
+    },
+    execution: {
+      mode,
+      questionContext
     }
   }
+}
+
+function detectExecutionMode(context: typeof github.context): {
+  mode: ExecutionMode
+  prNumber: number
+  questionContext?: QuestionContext
+} {
+  if (context.eventName === 'issue_comment') {
+    const comment = context.payload.comment
+    const issue = context.payload.issue
+
+    if (!issue?.pull_request) {
+      throw new Error(
+        'Comment is not on a pull request. This action only works on PR comments.'
+      )
+    }
+
+    const commentBody = comment?.body || ''
+    const botMention = '@review-my-code-bot'
+
+    if (commentBody.includes(botMention)) {
+      const question = commentBody.replace(botMention, '').trim()
+
+      if (!question) {
+        throw new Error(
+          `Please provide a question after ${botMention}. Example: "${botMention} Why is this function needed?"`
+        )
+      }
+
+      let fileContext: QuestionContext['fileContext'] | undefined
+
+      if (comment?.path) {
+        fileContext = {
+          path: comment.path,
+          line: comment.line || comment.original_line
+        }
+      }
+
+      core.info(`Question detected: "${question}"`)
+      core.info(`Asked by: ${comment?.user?.login || 'unknown'}`)
+
+      return {
+        mode: 'question-answering',
+        prNumber: issue.number,
+        questionContext: {
+          commentId: String(comment?.id || ''),
+          question,
+          author: comment?.user?.login || 'unknown',
+          fileContext
+        }
+      }
+    }
+
+    core.info('Comment does not mention @review-my-code-bot, skipping')
+    throw new Error(
+      'This action was triggered by a comment but no bot mention was found. Skipping.'
+    )
+  }
+
+  if (context.eventName === 'pull_request') {
+    const prNumber = context.payload.pull_request?.number
+
+    if (!prNumber) {
+      throw new Error(
+        'This action can only be run on pull_request events. No PR number found in context.'
+      )
+    }
+
+    return {
+      mode: 'full-review',
+      prNumber
+    }
+  }
+
+  throw new Error(
+    `Unsupported event: ${context.eventName}. This action supports 'pull_request' and 'issue_comment' events only.`
+  )
 }
 
 function parseNumericInput(

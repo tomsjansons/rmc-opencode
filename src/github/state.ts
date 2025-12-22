@@ -16,7 +16,7 @@ export interface ReviewThread {
   id: string
   file: string
   line: number
-  status: 'PENDING' | 'RESOLVED' | 'DISPUTED'
+  status: 'PENDING' | 'RESOLVED' | 'DISPUTED' | 'ESCALATED'
   score: number
   assessment: {
     finding: string
@@ -28,6 +28,12 @@ export interface ReviewThread {
     body: string
     timestamp: string
   }
+  developer_replies?: Array<{
+    author: string
+    body: string
+    timestamp: string
+  }>
+  escalated_at?: string
 }
 
 export interface PassResult {
@@ -218,6 +224,16 @@ export class StateManager {
       })
 
       const threads: ReviewThread[] = []
+      const commentMap = new Map<number, (typeof reviewComments.data)[0][]>()
+
+      for (const comment of reviewComments.data) {
+        const replyToId = comment.in_reply_to_id
+        if (replyToId) {
+          const replies = commentMap.get(replyToId) || []
+          replies.push(comment)
+          commentMap.set(replyToId, replies)
+        }
+      }
 
       for (const comment of reviewComments.data) {
         if (comment.in_reply_to_id) {
@@ -231,6 +247,19 @@ export class StateManager {
           continue
         }
 
+        const replies = commentMap.get(comment.id) || []
+        const developerReplies = replies
+          .filter(
+            (r) =>
+              r.user?.login !== 'opencode-reviewer[bot]' &&
+              r.user?.login !== 'github-actions[bot]'
+          )
+          .map((r) => ({
+            author: r.user?.login || 'unknown',
+            body: r.body,
+            timestamp: r.created_at
+          }))
+
         threads.push({
           id: threadId,
           file: comment.path,
@@ -242,7 +271,9 @@ export class StateManager {
             author: comment.user?.login || 'unknown',
             body: comment.body,
             timestamp: comment.created_at
-          }
+          },
+          developer_replies:
+            developerReplies.length > 0 ? developerReplies : undefined
         })
       }
 
@@ -427,7 +458,7 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
 
   async updateThreadStatus(
     threadId: string,
-    status: 'PENDING' | 'RESOLVED' | 'DISPUTED'
+    status: 'PENDING' | 'RESOLVED' | 'DISPUTED' | 'ESCALATED'
   ): Promise<void> {
     const state = await this.getOrCreateState()
 
@@ -437,6 +468,9 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
     }
 
     thread.status = status
+    if (status === 'ESCALATED') {
+      thread.escalated_at = new Date().toISOString()
+    }
     await this.saveState(state)
   }
 
@@ -466,6 +500,192 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
     }
 
     await this.saveState(state)
+  }
+
+  async fetchDeveloperReplies(threadId: string): Promise<
+    Array<{
+      author: string
+      body: string
+      timestamp: string
+    }>
+  > {
+    try {
+      const { owner, repo, prNumber } = this.config.github
+
+      const comments = await this.octokit.pulls.listReviewComments({
+        owner,
+        repo,
+        pull_number: prNumber,
+        per_page: 100
+      })
+
+      const replies = comments.data
+        .filter(
+          (comment) =>
+            comment.in_reply_to_id === Number(threadId) &&
+            comment.user?.login !== 'opencode-reviewer[bot]' &&
+            comment.user?.login !== 'github-actions[bot]'
+        )
+        .map((comment) => ({
+          author: comment.user?.login || 'unknown',
+          body: comment.body,
+          timestamp: comment.created_at
+        }))
+
+      return replies
+    } catch (error) {
+      core.warning(
+        `Failed to fetch developer replies for thread ${threadId}: ${error}`
+      )
+      return []
+    }
+  }
+
+  async classifyDeveloperReply(
+    originalFinding: string,
+    replyBody: string
+  ): Promise<'acknowledgment' | 'dispute' | 'question' | 'out_of_scope'> {
+    const prompt = `You are analyzing a developer's response to a code review comment to classify their intent.
+
+Original finding: "${originalFinding}"
+
+Developer's response:
+"""
+${replyBody}
+"""
+
+Classify the response as ONE of the following:
+- "acknowledgment": Developer agrees and commits to fixing it (e.g., "good catch", "will fix", "you're right")
+- "dispute": Developer disagrees with the finding (e.g., "this is intentional", "middleware handles this", "size is constrained")
+- "question": Developer asks for clarification (e.g., "what do you mean?", "can you explain?", "where should I...")
+- "out_of_scope": Developer acknowledges but will fix later (e.g., "will fix in next sprint", "out of scope for this PR")
+
+Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
+
+    const requestBody = {
+      model: this.config.opencode.model,
+      messages: [
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      temperature: 0.1,
+      max_tokens: 10
+    }
+
+    try {
+      const response = await fetch(OPENROUTER_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.config.opencode.apiKey}`,
+          'HTTP-Referer': 'https://github.com/opencode-pr-reviewer',
+          'X-Title': 'OpenCode PR Reviewer'
+        },
+        body: JSON.stringify(requestBody)
+      })
+
+      if (!response.ok) {
+        throw new Error(
+          `OpenRouter API request failed: ${response.status} ${response.statusText}`
+        )
+      }
+
+      const data = (await response.json()) as {
+        choices?: Array<{ message?: { content?: string } }>
+      }
+
+      const content = data.choices?.[0]?.message?.content
+        ?.trim()
+        .toLowerCase() as
+        | 'acknowledgment'
+        | 'dispute'
+        | 'question'
+        | 'out_of_scope'
+        | undefined
+
+      if (
+        content === 'acknowledgment' ||
+        content === 'dispute' ||
+        content === 'question' ||
+        content === 'out_of_scope'
+      ) {
+        return content
+      }
+
+      core.debug(
+        `Unexpected classification response: ${content}, defaulting to dispute`
+      )
+      return 'dispute'
+    } catch (error) {
+      core.warning(
+        `Failed to classify developer reply via API: ${error}, using fallback`
+      )
+      return this.classifyDeveloperReplyFallback(replyBody)
+    }
+  }
+
+  private classifyDeveloperReplyFallback(
+    replyBody: string
+  ): 'acknowledgment' | 'dispute' | 'question' | 'out_of_scope' {
+    const lowerBody = replyBody.toLowerCase()
+
+    const acknowledgmentPhrases = [
+      'good catch',
+      'will fix',
+      'thanks',
+      "you're right",
+      'you are right',
+      'agreed',
+      'makes sense',
+      'fair point'
+    ]
+    if (acknowledgmentPhrases.some((phrase) => lowerBody.includes(phrase))) {
+      return 'acknowledgment'
+    }
+
+    const questionMarkers = ['what', 'why', 'how', 'can you', 'could you', '?']
+    if (questionMarkers.some((marker) => lowerBody.includes(marker))) {
+      return 'question'
+    }
+
+    const outOfScopePhrases = [
+      'next sprint',
+      'later',
+      'future pr',
+      'separate pr',
+      'out of scope',
+      'follow up'
+    ]
+    if (outOfScopePhrases.some((phrase) => lowerBody.includes(phrase))) {
+      return 'out_of_scope'
+    }
+
+    return 'dispute'
+  }
+
+  async getThreadsWithDeveloperReplies(): Promise<ReviewThread[]> {
+    const state = await this.getOrCreateState()
+
+    const threadsWithReplies: ReviewThread[] = []
+
+    for (const thread of state.threads) {
+      if (thread.status === 'RESOLVED') {
+        continue
+      }
+
+      const replies = await this.fetchDeveloperReplies(thread.id)
+
+      if (replies.length > 0) {
+        threadsWithReplies.push({
+          ...thread,
+          developer_replies: replies
+        })
+      }
+    }
+
+    return threadsWithReplies
   }
 }
 

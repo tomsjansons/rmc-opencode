@@ -12,57 +12,61 @@ than comments.
 All code must pass linting checks before commit.  
 CI/CD will reject any code that fails linting standards.
 
+**No Dead Code** There should not be any obsolete/dead/unreabable code
+(functions, classes, etc) that are left from previous iterations or refactors.
+Also additional utility function or helpers or unused exported functions should
+never be created if they are not immediately used elsewhere in the codebase.
 
-**No Dead Code**
-There should not be any obsolete/dead/unreabable code (functions, classes, etc) that are 
-left from previous iterations or refactors. Also additional utility function or helpers or 
-unused exported functions should never be created if they are not immediately used elsewhere in the codebase.
-
-Placeholder functions are allowed for high level planning/wiring but they must never
-contain actual logic, but always just the signature 
-and `throw Error("TODO: implement in Phase X")` according to the project plan
+Placeholder functions are allowed for high level planning/wiring but they must
+never contain actual logic, but always just the signature and
+`throw Error("TODO: implement in Phase X")` according to the project plan
 
 ## TypeScript Development
 
 ### 1. Prefer `type` over `interface`
 
-Use `type` aliases instead of `interface` for most type definitions. `type` is more flexible as it can represent primitives, unions, tuples, and other types in addition to object shapes.
+Use `type` aliases instead of `interface` for most type definitions. `type` is
+more flexible as it can represent primitives, unions, tuples, and other types in
+addition to object shapes.
 
 #### Good Examples:
+
 ```typescript
 // Primitives
-type UserId = string;
+type UserId = string
 
 // Union types
-type Status = 'active' | 'inactive' | 'pending';
+type Status = 'active' | 'inactive' | 'pending'
 
 // Object shapes
 type User = {
-  id: UserId;
-  name: string;
-};
+  id: UserId
+  name: string
+}
 ```
 
 #### Bad Examples:
+
 ```typescript
 // Don't use interface for primitives
-interface UserId extends string {}  // Error
+interface UserId extends string {} // Error
 
 // Don't use interface for union types
-interface Status { 
-  value: 'active' | 'inactive' | 'pending'; 
+interface Status {
+  value: 'active' | 'inactive' | 'pending'
 }
 
 // Unnecessary interface for simple object shapes
 interface User {
-  id: UserId;
-  name: string;
+  id: UserId
+  name: string
 }
 ```
 
 #### When to Use `interface`
 
 Only use `interface` when you specifically need its features:
+
 - Declaration merging
 - Implementing classes
 - Extending existing interfaces
@@ -70,75 +74,77 @@ Only use `interface` when you specifically need its features:
 ```typescript
 // Declaration merging
 interface Window {
-  myCustomProperty: string;
+  myCustomProperty: string
 }
 
 // Implementing classes
 interface Logger {
-  log(message: string): void;
+  log(message: string): void
 }
 ```
 
 ### 2. Control Flows Must Always Use Curly Braces
 
-Always wrap control flow bodies in curly braces, even for single statements. This prevents errors when modifying code and improves readability.
+Always wrap control flow bodies in curly braces, even for single statements.
+This prevents errors when modifying code and improves readability.
 
 #### Good Examples:
+
 ```typescript
 if (!isOk) {
-  return false;
+  return false
 }
 
 for (let i = 0; i < items.length; i++) {
-  processItem(items[i]);
+  processItem(items[i])
 }
 
 while (condition) {
-  doSomething();
+  doSomething()
 }
 ```
 
 #### Bad Examples:
+
 ```typescript
 // Dangerous - don't do this
-if (!isOk) return false;
+if (!isOk) return false
 
-for (let i = 0; i < items.length; i++) processItem(items[i]);
+for (let i = 0; i < items.length; i++) processItem(items[i])
 
-while (condition) doSomething();
+while (condition) doSomething()
 ```
 
 ### 3. Avoid Casting Through `unknown`
 
-Never cast values through `unknown` as it bypasses TypeScript's type safety. Instead, use proper validation, type guards, or assertion libraries.
+Never cast values through `unknown` as it bypasses TypeScript's type safety.
+Instead, use proper validation, type guards, or assertion libraries.
 
 #### Good Examples:
+
 ```typescript
 // Type guard function
 function isUser(obj: any): obj is User {
-  return (
-    typeof obj === 'object' && 
-    obj !== null && 
-    typeof obj.name === 'string'
-  );
+  return typeof obj === 'object' && obj !== null && typeof obj.name === 'string'
 }
 
 // Runtime validation with Zod
-import { z } from 'zod';
-const UserSchema = z.object({ name: z.string() });
-const user = UserSchema.parse(data); // Throws if invalid
+import { z } from 'zod'
+const UserSchema = z.object({ name: z.string() })
+const user = UserSchema.parse(data) // Throws if invalid
 
 // Direct assertion (when certain)
-const element = document.getElementById('myId') as HTMLDivElement;
+const element = document.getElementById('myId') as HTMLDivElement
 ```
 
 #### Bad Examples:
+
 ```typescript
 // Never cast through unknown
-const user = data as unknown as User;
+const user = data as unknown as User
 
 // Bypasses all type checking
-const element = document.getElementById('myId') as unknown as HTMLDivElement;
+const element = document.getElementById('myId') as unknown as HTMLDivElement
 ```
 
 ## Testing Principles

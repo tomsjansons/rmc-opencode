@@ -1,3 +1,18 @@
+export type ExecutionMode =
+  | 'full-review'
+  | 'dispute-resolution'
+  | 'question-answering'
+
+export interface QuestionContext {
+  commentId: string
+  question: string
+  author: string
+  fileContext?: {
+    path: string
+    line?: number
+  }
+}
+
 export interface ReviewConfig {
   opencode: {
     apiKey: string
@@ -18,9 +33,17 @@ export interface ReviewConfig {
     repo: string
     prNumber: number
   }
+  dispute: {
+    enableHumanEscalation: boolean
+    humanReviewers: string[] // GitHub usernames to tag on unresolved disputes
+  }
+  execution: {
+    mode: ExecutionMode
+    questionContext?: QuestionContext
+  }
 }
 
-export type ThreadStatus = 'PENDING' | 'RESOLVED' | 'DISPUTED'
+export type ThreadStatus = 'PENDING' | 'RESOLVED' | 'DISPUTED' | 'ESCALATED'
 
 export interface ThreadComment {
   author: string

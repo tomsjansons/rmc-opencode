@@ -166,4 +166,85 @@ export class GitHubAPI {
       )
     }
   }
+
+  async escalateToHumanReviewers(
+    threadId: string,
+    agentPosition: string,
+    developerPosition: string,
+    reviewers: string[]
+  ): Promise<void> {
+    try {
+      logger.debug(
+        `Escalating thread ${threadId} to human reviewers: ${reviewers.join(', ')}`
+      )
+
+      if (reviewers.length === 0) {
+        logger.warning('No human reviewers configured for escalation')
+        return
+      }
+
+      const reviewerTags = reviewers.map((r) => `@${r}`).join(' ')
+
+      await this.octokit.pulls.createReplyForReviewComment({
+        owner: this.owner,
+        repo: this.repo,
+        pull_number: this.prNumber,
+        comment_id: Number(threadId),
+        body: `🔺 **Escalated to Human Review**
+
+This issue has an unresolved dispute between the review agent and the developer. Human judgment is needed.
+
+**Review Agent's Position:**
+${agentPosition}
+
+**Developer's Position:**
+${developerPosition}
+
+${reviewerTags} - Please review this dispute and make a final decision.`
+      })
+
+      logger.info(`Escalated thread ${threadId} to ${reviewers.join(', ')}`)
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to escalate to human reviewers: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async replyToIssueComment(commentId: string, body: string): Promise<void> {
+    try {
+      logger.debug(`Replying to issue comment ${commentId}`)
+
+      await this.octokit.issues.createComment({
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: this.prNumber,
+        body
+      })
+
+      logger.info(`Replied to issue comment ${commentId}`)
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to reply to issue comment: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async getPRContext(): Promise<{ files: string[]; diff: string }> {
+    try {
+      logger.debug('Fetching PR context for question answering')
+
+      const [files, diff] = await Promise.all([
+        this.getPRFiles(),
+        this.getPRDiff()
+      ])
+
+      return { files, diff }
+    } catch (error) {
+      logger.warning(
+        `Failed to fetch PR context: ${error instanceof Error ? error.message : String(error)}`
+      )
+      return { files: [], diff: '' }
+    }
+  }
 }
