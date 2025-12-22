@@ -198,23 +198,35 @@ export class StateManager {
     assessment: string
     score: number
   } | null {
-    try {
-      const jsonMatch = body.match(/```json\s*(\{[\s\S]*?\})\s*```/)
-      if (jsonMatch?.[1]) {
-        const parsed = JSON.parse(jsonMatch[1])
-        if (
-          parsed.finding &&
-          parsed.assessment &&
-          typeof parsed.score === 'number'
-        ) {
-          return parsed
+    const patterns = [
+      /```json\s*(\{[\s\S]*?\})\s*```/,
+      /(\{\s*"finding"[\s\S]*?"score"\s*:\s*\d+\s*\})/
+    ]
+
+    for (const pattern of patterns) {
+      try {
+        const match = body.match(pattern)
+        if (match?.[1]) {
+          const sanitized = this.sanitizeJsonString(match[1])
+          const parsed = JSON.parse(sanitized)
+          if (
+            parsed.finding &&
+            parsed.assessment &&
+            typeof parsed.score === 'number'
+          ) {
+            return parsed
+          }
         }
+      } catch (error) {
+        core.debug(`Failed to parse JSON with pattern ${pattern}: ${error}`)
       }
-    } catch (error) {
-      core.debug(`Failed to extract assessment from comment: ${error}`)
     }
 
     return null
+  }
+
+  private sanitizeJsonString(jsonStr: string): string {
+    return jsonStr.replace(/`/g, "'")
   }
 
   async detectConcession(body: string): Promise<boolean> {

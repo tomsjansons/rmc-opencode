@@ -37822,21 +37822,31 @@ class StateManager {
         return 'PENDING';
     }
     extractAssessmentFromComment(body) {
-        try {
-            const jsonMatch = body.match(/```json\s*(\{[\s\S]*?\})\s*```/);
-            if (jsonMatch?.[1]) {
-                const parsed = JSON.parse(jsonMatch[1]);
-                if (parsed.finding &&
-                    parsed.assessment &&
-                    typeof parsed.score === 'number') {
-                    return parsed;
+        const patterns = [
+            /```json\s*(\{[\s\S]*?\})\s*```/,
+            /(\{\s*"finding"[\s\S]*?"score"\s*:\s*\d+\s*\})/
+        ];
+        for (const pattern of patterns) {
+            try {
+                const match = body.match(pattern);
+                if (match?.[1]) {
+                    const sanitized = this.sanitizeJsonString(match[1]);
+                    const parsed = JSON.parse(sanitized);
+                    if (parsed.finding &&
+                        parsed.assessment &&
+                        typeof parsed.score === 'number') {
+                        return parsed;
+                    }
                 }
             }
-        }
-        catch (error) {
-            coreExports.debug(`Failed to extract assessment from comment: ${error}`);
+            catch (error) {
+                coreExports.debug(`Failed to parse JSON with pattern ${pattern}: ${error}`);
+            }
         }
         return null;
+    }
+    sanitizeJsonString(jsonStr) {
+        return jsonStr.replace(/`/g, "'");
     }
     async detectConcession(body) {
         const cacheKey = this.generateSentimentCacheKey(body);

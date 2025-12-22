@@ -335,6 +335,70 @@ Some text after
       expect(assessment.score).toBe(7)
     })
 
+    it('should extract assessment from JSON without code fence', () => {
+      const comment = `Per AGENTS.md, prefer type over interface.
+
+export type PostReviewCommentArgs = {
+  path: string
+  line: number
+  body: string
+}
+{
+  "finding": "Violation of AGENTS.md",
+  "assessment": "The project's AGENTS.md explicitly states 'Prefer type over interface'.",
+  "score": 5
+}`
+
+      const assessment = (
+        stateManager as unknown as {
+          extractAssessmentFromComment: (body: string) => {
+            finding: string
+            assessment: string
+            score: number
+          } | null
+        }
+      ).extractAssessmentFromComment(comment)
+
+      expect(assessment).not.toBeNull()
+      expect(assessment?.finding).toBe('Violation of AGENTS.md')
+      expect(assessment?.score).toBe(5)
+    })
+
+    it('should handle backticks in JSON strings', () => {
+      const comment = `Per \`AGENTS.md\`, prefer \`type\` over \`interface\`.
+
+\`\`\`typescript
+export type PostReviewCommentArgs = {
+  path: string
+  line: number
+  body: string
+}
+\`\`\`
+
+---
+\`\`\`json
+{
+  "finding": "Violation of AGENTS.md: Preference for \`type\` over \`interface\`",
+  "assessment": "The project's AGENTS.md explicitly states 'Prefer \`type\` over \`interface\`'. This interface definition should be a \`type\` alias.",
+  "score": 5
+}
+\`\`\``
+
+      const assessment = (
+        stateManager as unknown as {
+          extractAssessmentFromComment: (body: string) => {
+            finding: string
+            assessment: string
+            score: number
+          } | null
+        }
+      ).extractAssessmentFromComment(comment)
+
+      expect(assessment).not.toBeNull()
+      expect(assessment?.finding).toContain('Violation of AGENTS.md')
+      expect(assessment?.score).toBe(5)
+    })
+
     it('should return null for comment without JSON', () => {
       const comment = 'Just a regular comment without JSON'
 
