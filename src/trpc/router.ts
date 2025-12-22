@@ -17,133 +17,6 @@ export type TRPCContext = {
   github: GitHubAPI
 }
 
-const STOP_WORDS = new Set([
-  'a',
-  'an',
-  'the',
-  'is',
-  'are',
-  'was',
-  'were',
-  'be',
-  'been',
-  'being',
-  'have',
-  'has',
-  'had',
-  'do',
-  'does',
-  'did',
-  'will',
-  'would',
-  'could',
-  'should',
-  'may',
-  'might',
-  'must',
-  'shall',
-  'can',
-  'need',
-  'dare',
-  'ought',
-  'used',
-  'to',
-  'of',
-  'in',
-  'for',
-  'on',
-  'with',
-  'at',
-  'by',
-  'from',
-  'as',
-  'into',
-  'through',
-  'during',
-  'before',
-  'after',
-  'above',
-  'below',
-  'between',
-  'under',
-  'again',
-  'further',
-  'then',
-  'once',
-  'here',
-  'there',
-  'when',
-  'where',
-  'why',
-  'how',
-  'all',
-  'each',
-  'few',
-  'more',
-  'most',
-  'other',
-  'some',
-  'such',
-  'no',
-  'nor',
-  'not',
-  'only',
-  'own',
-  'same',
-  'so',
-  'than',
-  'too',
-  'very',
-  'just',
-  'and',
-  'but',
-  'if',
-  'or',
-  'because',
-  'until',
-  'while',
-  'this',
-  'that',
-  'these',
-  'those'
-])
-
-function normalizeForComparison(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function getSignificantWords(text: string): Set<string> {
-  const words = normalizeForComparison(text).split(' ')
-  return new Set(words.filter((w) => w.length > 2 && !STOP_WORDS.has(w)))
-}
-
-function isSimilarFinding(existing: string, incoming: string): boolean {
-  const normalizedExisting = normalizeForComparison(existing)
-  const normalizedIncoming = normalizeForComparison(incoming)
-
-  if (normalizedExisting === normalizedIncoming) {
-    return true
-  }
-
-  const existingWords = getSignificantWords(existing)
-  const incomingWords = getSignificantWords(incoming)
-
-  if (existingWords.size === 0 || incomingWords.size === 0) {
-    return false
-  }
-
-  const intersection = [...existingWords].filter((w) => incomingWords.has(w))
-  const smallerSet = Math.min(existingWords.size, incomingWords.size)
-
-  const overlapRatio = intersection.length / smallerSet
-
-  return overlapRatio >= 0.5
-}
-
 const t = initTRPC.context<TRPCContext>().create({
   transformer: superjson
 })
@@ -182,13 +55,10 @@ export const appRouter = router({
           }
         }
 
-        const state = ctx.orchestrator.getState()
-        const existingThread = state?.threads.find(
-          (t) =>
-            t.file === input.file &&
-            t.line === input.line &&
-            t.status !== 'RESOLVED' &&
-            isSimilarFinding(t.assessment.finding, input.assessment.finding)
+        const existingThread = ctx.orchestrator.findDuplicateThread(
+          input.file,
+          input.line,
+          input.assessment.finding
         )
 
         if (existingThread) {

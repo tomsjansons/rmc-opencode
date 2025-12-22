@@ -311,6 +311,14 @@ export class ReviewOrchestrator {
     }
   }
 
+  findDuplicateThread(
+    file: string,
+    line: number,
+    finding: string
+  ): ReviewThread | null {
+    return this.stateManager.findDuplicateThread(file, line, finding)
+  }
+
   private async detectSecuritySensitivity(): Promise<string> {
     try {
       const packageJsonPath = join(this.workspaceRoot, 'package.json')

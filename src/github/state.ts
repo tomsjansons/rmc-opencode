@@ -1,10 +1,10 @@
 import * as core from '@actions/core'
 import { Octokit } from '@octokit/rest'
 
+import { OPENROUTER_API_URL } from '../config/constants.js'
 import type { ReviewConfig } from '../review/types.js'
 
 const STATE_SCHEMA_VERSION = 1
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
 const BOT_USERS = ['opencode-reviewer[bot]', 'github-actions[bot]']
 
 export type ReviewThread = {
@@ -629,7 +629,154 @@ Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
 
     return threadsWithReplies
   }
+
+  findDuplicateThread(
+    file: string,
+    line: number,
+    finding: string
+  ): ReviewThread | null {
+    if (!this.currentState) {
+      return null
+    }
+
+    return (
+      this.currentState.threads.find(
+        (t) =>
+          t.file === file &&
+          t.line === line &&
+          t.status !== 'RESOLVED' &&
+          this.isSimilarFinding(t.assessment.finding, finding)
+      ) || null
+    )
+  }
+
+  private isSimilarFinding(existing: string, incoming: string): boolean {
+    const normalizedExisting = this.normalizeForComparison(existing)
+    const normalizedIncoming = this.normalizeForComparison(incoming)
+
+    if (normalizedExisting === normalizedIncoming) {
+      return true
+    }
+
+    const existingWords = this.getSignificantWords(existing)
+    const incomingWords = this.getSignificantWords(incoming)
+
+    if (existingWords.size === 0 || incomingWords.size === 0) {
+      return false
+    }
+
+    const intersection = [...existingWords].filter((w) => incomingWords.has(w))
+    const smallerSet = Math.min(existingWords.size, incomingWords.size)
+
+    const overlapRatio = intersection.length / smallerSet
+
+    return overlapRatio >= 0.5
+  }
+
+  private normalizeForComparison(text: string): string {
+    return text
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  private getSignificantWords(text: string): Set<string> {
+    const words = this.normalizeForComparison(text).split(' ')
+    return new Set(words.filter((w) => w.length > 2 && !STOP_WORDS.has(w)))
+  }
 }
+
+const STOP_WORDS = new Set([
+  'a',
+  'an',
+  'the',
+  'is',
+  'are',
+  'was',
+  'were',
+  'be',
+  'been',
+  'being',
+  'have',
+  'has',
+  'had',
+  'do',
+  'does',
+  'did',
+  'will',
+  'would',
+  'could',
+  'should',
+  'may',
+  'might',
+  'must',
+  'shall',
+  'can',
+  'need',
+  'dare',
+  'ought',
+  'used',
+  'to',
+  'of',
+  'in',
+  'for',
+  'on',
+  'with',
+  'at',
+  'by',
+  'from',
+  'as',
+  'into',
+  'through',
+  'during',
+  'before',
+  'after',
+  'above',
+  'below',
+  'between',
+  'under',
+  'again',
+  'further',
+  'then',
+  'once',
+  'here',
+  'there',
+  'when',
+  'where',
+  'why',
+  'how',
+  'all',
+  'each',
+  'few',
+  'more',
+  'most',
+  'other',
+  'some',
+  'such',
+  'no',
+  'nor',
+  'not',
+  'only',
+  'own',
+  'same',
+  'so',
+  'than',
+  'too',
+  'very',
+  'just',
+  'and',
+  'but',
+  'if',
+  'or',
+  'because',
+  'until',
+  'while',
+  'this',
+  'that',
+  'these',
+  'those'
+])
 
 export class StateError extends Error {
   constructor(
