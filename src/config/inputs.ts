@@ -164,11 +164,26 @@ function detectExecutionMode(context: typeof github.context): {
   }
 
   if (context.eventName === 'pull_request') {
-    const prNumber = context.payload.pull_request?.number
+    const pullRequest = context.payload.pull_request
+    const prNumber = pullRequest?.number
+    const action = context.payload.action
 
     if (!prNumber) {
       throw new Error(
         'This action can only be run on pull_request events. No PR number found in context.'
+      )
+    }
+
+    const allowedActions = ['opened', 'synchronize', 'ready_for_review']
+    if (action && !allowedActions.includes(action)) {
+      throw new Error(
+        `Skipping: pull_request action '${action}' is not supported. Supported actions: ${allowedActions.join(', ')}`
+      )
+    }
+
+    if (pullRequest?.draft === true) {
+      throw new Error(
+        'Skipping: PR is a draft. Reviews will run when the PR is marked as ready for review.'
       )
     }
 
