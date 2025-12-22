@@ -150,23 +150,17 @@ No dedicated module exists for:
 - Fixed related TypeScript errors with `latestReply` potentially being undefined
   by adding proper null checks
 
-### 9. Event Trigger Handling Incomplete
+### ~~9. Event Trigger Handling Incomplete~~ - FIXED
 
-**Requirement:** Only runs on "Ready for Review" or new pushes
-(project-description.md §8)
+**Status:** ✅ Fixed
 
-**Current State:** `detectExecutionMode()` in `inputs.ts` handles:
+**Changes Made:**
 
-- `issue_comment` events (for question-answering)
-- `pull_request` events (for full-review)
-
-But does not check:
-
-- If PR is draft (should skip)
-- If PR is "ready for review" specifically
-- Specific `pull_request` action types (`opened`, `synchronize`, etc.)
-
-**Impact:** Low - May run on draft PRs unnecessarily
+- Updated `detectExecutionMode()` in `src/config/inputs.ts` to:
+  - Skip draft PRs with a clear message
+  - Only allow specific `pull_request` action types: `opened`, `synchronize`,
+    `ready_for_review`
+  - Throw descriptive errors when skipping unsupported events
 
 ### 10. Timeout Race Condition
 
@@ -250,10 +244,10 @@ file each time. No batching or deferred save mechanism.
 | Missing Infra           | 2             | Medium   |
 | Documentation           | 1             | High     |
 | API/Feature Gaps        | ~~2~~ 1       | Low      |
-| Bugs/Contradictions     | ~~4~~ 2       | Varies   |
+| Bugs/Contradictions     | ~~4~~ 1       | Varies   |
 | Minor Issues            | 4             | Low      |
-| **Total**               | ~~15~~ **11** |          |
-| **Fixed**               | **3**         |          |
+| **Total**               | ~~15~~ **10** |          |
+| **Fixed**               | **4**         |          |
 | **Removed (non-issue)** | **1**         |          |
 
 ## Recommended Priority
@@ -262,9 +256,10 @@ file each time. No batching or deferred save mechanism.
 2. ~~**Fix `executeDisputeResolution` visibility** - Compilation/runtime error~~
    ✅ DONE
 3. ~~**Fix GitHub API pagination** - Large PRs now supported~~ ✅ DONE
-4. **Update README.md** - Users cannot adopt without docs
-5. **Add CI/CD workflows** - Quality assurance
-6. **Pass elevation threshold to prompts** - Minor enhancement
+4. ~~**Fix event trigger handling** - Skip drafts, check action types~~ ✅ DONE
+5. **Update README.md** - Users cannot adopt without docs
+6. **Add CI/CD workflows** - Quality assurance
+7. **Pass elevation threshold to prompts** - Minor enhancement
 
 ## Clarifications
 

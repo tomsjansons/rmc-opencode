@@ -7,10 +7,14 @@ import type {
 } from '../review/types.js'
 
 export function parseInputs(): ReviewConfig {
-  const apiKey = core.getInput('opencode_api_key', { required: true })
+  const apiKey = core.getInput('openrouter_api_key', { required: true })
   const model =
-    core.getInput('model', { required: false }) || 'google/gemini-flash-1.5'
+    core.getInput('model', { required: false }) ||
+    'anthropic/claude-sonnet-4-20250514'
   const enableWeb = core.getBooleanInput('enable_web', { required: false })
+  const debugLogging = core.getBooleanInput('debug_logging', {
+    required: false
+  })
 
   const problemThreshold = parseNumericInput(
     'problem_score_threshold',
@@ -20,13 +24,18 @@ export function parseInputs(): ReviewConfig {
     'Problem score threshold must be between 1 and 10'
   )
 
-  const elevationThreshold = parseNumericInput(
-    'score_elevation_threshold',
-    5,
-    1,
-    100,
-    'Score elevation threshold must be between 1 and 100'
-  )
+  const blockingThresholdInput = core.getInput('blocking_score_threshold', {
+    required: false
+  })
+  const blockingThreshold = blockingThresholdInput
+    ? parseNumericInput(
+        'blocking_score_threshold',
+        problemThreshold,
+        1,
+        10,
+        'Blocking score threshold must be between 1 and 10'
+      )
+    : problemThreshold
 
   const reviewTimeoutMinutes = parseNumericInput(
     'review_timeout_minutes',
@@ -79,11 +88,12 @@ export function parseInputs(): ReviewConfig {
     opencode: {
       apiKey,
       model,
-      enableWeb
+      enableWeb,
+      debugLogging
     },
     scoring: {
       problemThreshold,
-      elevationThreshold
+      blockingThreshold
     },
     review: {
       timeoutMs: reviewTimeoutMinutes * 60 * 1000,
@@ -164,11 +174,26 @@ function detectExecutionMode(context: typeof github.context): {
   }
 
   if (context.eventName === 'pull_request') {
-    const prNumber = context.payload.pull_request?.number
+    const pullRequest = context.payload.pull_request
+    const prNumber = pullRequest?.number
+    const action = context.payload.action
 
     if (!prNumber) {
       throw new Error(
         'This action can only be run on pull_request events. No PR number found in context.'
+      )
+    }
+
+    const allowedActions = ['opened', 'synchronize', 'ready_for_review']
+    if (action && !allowedActions.includes(action)) {
+      throw new Error(
+        `Skipping: pull_request action '${action}' is not supported. Supported actions: ${allowedActions.join(', ')}`
+      )
+    }
+
+    if (pullRequest?.draft === true) {
+      throw new Error(
+        'Skipping: PR is a draft. Reviews will run when the PR is marked as ready for review.'
       )
     }
 
@@ -220,8 +245,15 @@ export function validateConfig(config: ReviewConfig): void {
     throw new Error('Problem threshold must be between 1 and 10')
   }
 
-  if (config.scoring.elevationThreshold < 1) {
-    throw new Error('Elevation threshold must be at least 1')
+  if (
+    config.scoring.blockingThreshold < 1 ||
+    config.scoring.blockingThreshold > 10
+  ) {
+    throw new Error('Blocking threshold must be between 1 and 10')
+  }
+
+  if (config.scoring.blockingThreshold < config.scoring.problemThreshold) {
+    throw new Error('Blocking threshold cannot be lower than problem threshold')
   }
 
   if (config.review.timeoutMs < 5 * 60 * 1000) {

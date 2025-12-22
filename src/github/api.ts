@@ -4,15 +4,7 @@ import type { ReviewConfig } from '../review/types.js'
 import { GitHubAPIError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 
-function assertDiffIsString(val: unknown): asserts val is string {
-  if (typeof val !== 'string') {
-    throw new GitHubAPIError(
-      'Unexpected response type: expected string diff data'
-    )
-  }
-}
-
-export interface PostReviewCommentArgs {
+export type PostReviewCommentArgs = {
   path: string
   line: number
   body: string
@@ -31,38 +23,6 @@ export class GitHubAPI {
     this.owner = config.github.owner
     this.repo = config.github.repo
     this.prNumber = config.github.prNumber
-  }
-
-  async getPRDiff(): Promise<string> {
-    try {
-      logger.debug(
-        `Fetching PR diff for ${this.owner}/${this.repo}#${this.prNumber}`
-      )
-
-      const response = await this.octokit.request(
-        'GET /repos/{owner}/{repo}/pulls/{pull_number}',
-        {
-          owner: this.owner,
-          repo: this.repo,
-          pull_number: this.prNumber,
-          headers: {
-            accept: 'application/vnd.github.v3.diff'
-          }
-        }
-      )
-
-      const diff = response.data
-
-      assertDiffIsString(diff)
-
-      logger.info(`Fetched PR diff: ${diff.length} characters`)
-
-      return diff
-    } catch (error) {
-      throw new GitHubAPIError(
-        `Failed to fetch PR diff: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
   }
 
   async getPRFiles(): Promise<string[]> {
@@ -123,8 +83,45 @@ export class GitHubAPI {
 
       return commentId
     } catch (error) {
+      const isUnprocessableEntity =
+        error instanceof Error &&
+        (error.message.includes('422') ||
+          error.message.includes('Unprocessable Entity'))
+
+      if (isUnprocessableEntity) {
+        logger.warning(
+          `Line ${args.line} not in PR diff for ${args.path}, falling back to PR-level comment`
+        )
+        return this.postPRLevelComment(args)
+      }
+
       throw new GitHubAPIError(
         `Failed to post review comment: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  private async postPRLevelComment(
+    args: PostReviewCommentArgs
+  ): Promise<string> {
+    try {
+      const bodyWithLocation = `📍 **Location:** \`${args.path}:${args.line}\`\n\n${args.body}`
+
+      const response = await this.octokit.issues.createComment({
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: this.prNumber,
+        body: bodyWithLocation
+      })
+
+      const commentId = String(response.data.id)
+
+      logger.info(`Posted PR-level comment: ID ${commentId}`)
+
+      return commentId
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to post PR-level comment: ${error instanceof Error ? error.message : String(error)}`
       )
     }
   }
@@ -161,11 +158,101 @@ export class GitHubAPI {
         body: `✅ **Issue Resolved**\n\n${reason}`
       })
 
+      await this.resolveReviewThread(threadId)
+
       logger.info(`Resolved thread ${threadId}`)
     } catch (error) {
       throw new GitHubAPIError(
         `Failed to resolve thread: ${error instanceof Error ? error.message : String(error)}`
       )
+    }
+  }
+
+  private async resolveReviewThread(commentId: string): Promise<void> {
+    try {
+      const threadId = await this.getReviewThreadId(commentId)
+
+      if (!threadId) {
+        logger.warning(
+          `Could not find thread ID for comment ${commentId}, thread will remain unresolved`
+        )
+        return
+      }
+
+      await this.octokit.graphql(
+        `mutation ResolveThread($threadId: ID!) {
+          resolveReviewThread(input: { threadId: $threadId }) {
+            thread {
+              isResolved
+            }
+          }
+        }`,
+        { threadId }
+      )
+
+      logger.debug(`GraphQL: Resolved review thread ${threadId}`)
+    } catch (error) {
+      logger.warning(
+        `Failed to resolve review thread via GraphQL: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  private async getReviewThreadId(commentId: string): Promise<string | null> {
+    try {
+      const result = await this.octokit.graphql<{
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: Array<{
+                id: string
+                comments: {
+                  nodes: Array<{
+                    databaseId: number
+                  }>
+                }
+              }>
+            }
+          }
+        }
+      }>(
+        `query GetThreadId($owner: String!, $repo: String!, $prNumber: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $prNumber) {
+              reviewThreads(first: 100) {
+                nodes {
+                  id
+                  comments(first: 1) {
+                    nodes {
+                      databaseId
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }`,
+        {
+          owner: this.owner,
+          repo: this.repo,
+          prNumber: this.prNumber
+        }
+      )
+
+      const threads = result.repository.pullRequest.reviewThreads.nodes
+      for (const thread of threads) {
+        const firstComment = thread.comments.nodes[0]
+        if (firstComment && String(firstComment.databaseId) === commentId) {
+          return thread.id
+        }
+      }
+
+      return null
+    } catch (error) {
+      logger.warning(
+        `Failed to get review thread ID: ${error instanceof Error ? error.message : String(error)}`
+      )
+      return null
     }
   }
 
@@ -232,21 +319,18 @@ ${reviewerTags} - Please review this dispute and make a final decision.`
     }
   }
 
-  async getPRContext(): Promise<{ files: string[]; diff: string }> {
+  async getPRContext(): Promise<{ files: string[] }> {
     try {
       logger.debug('Fetching PR context for question answering')
 
-      const [files, diff] = await Promise.all([
-        this.getPRFiles(),
-        this.getPRDiff()
-      ])
+      const files = await this.getPRFiles()
 
-      return { files, diff }
+      return { files }
     } catch (error) {
       logger.warning(
         `Failed to fetch PR context: ${error instanceof Error ? error.message : String(error)}`
       )
-      return { files: [], diff: '' }
+      return { files: [] }
     }
   }
 }

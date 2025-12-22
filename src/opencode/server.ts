@@ -1,8 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   OPENCODE_SERVER_HOST,
@@ -12,16 +11,24 @@ import type { ReviewConfig } from '../review/types.js'
 import { OpenCodeError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 
-function getOpenCodeCLIPath(): string {
-  const __filename = fileURLToPath(import.meta.url)
-  const __dirname = dirname(__filename)
-  return join(__dirname, '..', '..', 'node_modules', '.bin', 'opencode')
+function getOpenCodeCLICommand(): { command: string; args: string[] } {
+  // Use npx to run opencode-ai CLI - this works in GitHub Actions
+  // without needing node_modules to be present
+  return {
+    command: 'npx',
+    args: ['opencode-ai']
+  }
 }
 
 type ServerStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
 
 type OpenCodeConfig = {
-  model: string
+  $schema: string
+  provider: {
+    openrouter: {
+      models: Record<string, { default?: boolean }>
+    }
+  }
   tools: {
     write: boolean
     bash: boolean
@@ -30,6 +37,13 @@ type OpenCodeConfig = {
   permission: {
     edit: 'deny'
     bash: 'deny'
+  }
+}
+
+type OpenCodeAuth = {
+  openrouter: {
+    type: 'api'
+    key: string
   }
 }
 
@@ -42,6 +56,7 @@ export class OpenCodeServer {
   private readonly healthCheckTimeoutMs = 30000
   private readonly shutdownTimeoutMs = 10000
   private configFilePath: string | null = null
+  private authFilePath: string | null = null
 
   constructor(private config: ReviewConfig) {
     this.healthCheckUrl = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`
@@ -133,32 +148,30 @@ export class OpenCodeServer {
 
     this.configFilePath = this.createConfigFile()
 
-    const opencodePath = getOpenCodeCLIPath()
+    const { command, args } = getOpenCodeCLICommand()
+    const serveArgs = [
+      ...args,
+      'serve',
+      '--port',
+      String(OPENCODE_SERVER_PORT),
+      '--hostname',
+      OPENCODE_SERVER_HOST
+    ]
 
     logger.debug(
       `Starting OpenCode server on port ${OPENCODE_SERVER_PORT} with model ${this.config.opencode.model}`
     )
-    logger.debug(`Using CLI path: ${opencodePath}`)
+    logger.debug(`Running: ${command} ${serveArgs.join(' ')}`)
     logger.debug(`Using config file: ${this.configFilePath}`)
 
-    this.serverProcess = spawn(
-      opencodePath,
-      [
-        'serve',
-        '--port',
-        String(OPENCODE_SERVER_PORT),
-        '--hostname',
-        OPENCODE_SERVER_HOST
-      ],
-      {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          OPENCODE_CONFIG: this.configFilePath
-        },
-        detached: false
-      }
-    )
+    this.serverProcess = spawn(command, serveArgs, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        OPENCODE_CONFIG: this.configFilePath
+      },
+      detached: false
+    })
 
     this.attachProcessHandlers()
   }
@@ -176,9 +189,19 @@ export class OpenCodeServer {
     }
 
     const configPath = join(configDir, 'opencode.json')
+    const model = this.config.opencode.model
 
     const config: OpenCodeConfig = {
-      model: this.config.opencode.model,
+      $schema: 'https://opencode.ai/config.json',
+      provider: {
+        openrouter: {
+          models: {
+            [model]: {
+              default: true
+            }
+          }
+        }
+      },
       tools: {
         write: false,
         bash: false,
@@ -193,29 +216,74 @@ export class OpenCodeServer {
     try {
       writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8')
       logger.debug(`Created OpenCode config file: ${configPath}`)
-      return configPath
+      logger.debug(`Config contents: ${JSON.stringify(config, null, 2)}`)
     } catch (error) {
       throw new OpenCodeError(
         `Failed to write config file: ${error instanceof Error ? error.message : String(error)}`
       )
     }
+
+    this.createAuthFile()
+
+    return configPath
   }
 
-  private cleanupConfigFile(): void {
-    if (!this.configFilePath) {
-      return
-    }
+  private createAuthFile(): void {
+    const dataDir = join(homedir(), '.local', 'share', 'opencode')
 
     try {
-      unlinkSync(this.configFilePath)
-      logger.debug(`Removed config file: ${this.configFilePath}`)
+      mkdirSync(dataDir, { recursive: true })
     } catch (error) {
-      logger.warning(
-        `Failed to remove config file: ${error instanceof Error ? error.message : String(error)}`
+      throw new OpenCodeError(
+        `Failed to create auth directory: ${error instanceof Error ? error.message : String(error)}`
       )
     }
 
-    this.configFilePath = null
+    const authPath = join(dataDir, 'auth.json')
+    this.authFilePath = authPath
+
+    const auth: OpenCodeAuth = {
+      openrouter: { type: 'api', key: this.config.opencode.apiKey }
+    }
+
+    try {
+      writeFileSync(authPath, JSON.stringify(auth, null, 2), {
+        encoding: 'utf8',
+        mode: 0o600
+      })
+      chmodSync(authPath, 0o600)
+      logger.debug(`Created OpenCode auth file: ${authPath}`)
+    } catch (error) {
+      throw new OpenCodeError(
+        `Failed to write auth file: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  private cleanupConfigFile(): void {
+    if (this.configFilePath) {
+      try {
+        unlinkSync(this.configFilePath)
+        logger.debug(`Removed config file: ${this.configFilePath}`)
+      } catch (error) {
+        logger.warning(
+          `Failed to remove config file: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+      this.configFilePath = null
+    }
+
+    if (this.authFilePath) {
+      try {
+        unlinkSync(this.authFilePath)
+        logger.debug(`Removed auth file: ${this.authFilePath}`)
+      } catch (error) {
+        logger.warning(
+          `Failed to remove auth file: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+      this.authFilePath = null
+    }
   }
 
   private attachProcessHandlers(): void {
@@ -309,12 +377,16 @@ export class OpenCodeServer {
   }
 
   private async killServerProcess(): Promise<void> {
+    logger.debug('killServerProcess: Starting')
+
     if (!this.serverProcess) {
+      logger.debug('killServerProcess: No server process to kill')
       return
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       if (!this.serverProcess) {
+        logger.debug('killServerProcess: Server process is null in promise')
         resolve()
         return
       }
@@ -322,33 +394,64 @@ export class OpenCodeServer {
       const pid = this.serverProcess.pid
 
       if (!pid) {
+        logger.debug('killServerProcess: No PID found')
         this.serverProcess = null
         resolve()
         return
       }
 
-      const timeoutId = setTimeout(() => {
+      logger.debug(`killServerProcess: Will kill PID ${pid}`)
+
+      const forceKillTimeout = setTimeout(() => {
+        logger.debug('killServerProcess: Force kill timeout reached')
         if (this.serverProcess && this.serverProcess.pid) {
           logger.warning(
             `Server did not terminate gracefully, sending SIGKILL to PID ${this.serverProcess.pid}`
           )
-          this.serverProcess.kill('SIGKILL')
+          try {
+            this.serverProcess.kill('SIGKILL')
+          } catch {
+            logger.debug(
+              'killServerProcess: SIGKILL failed (process may be dead)'
+            )
+          }
         }
-        reject(
-          new OpenCodeError(
-            `Server process did not terminate within ${this.shutdownTimeoutMs}ms`
-          )
-        )
+        this.serverProcess = null
+        logger.debug('killServerProcess: Resolving after force kill')
+        resolve()
       }, this.shutdownTimeoutMs)
 
-      this.serverProcess.once('exit', () => {
-        clearTimeout(timeoutId)
+      this.serverProcess.once('exit', (code, signal) => {
+        logger.debug(
+          `killServerProcess: Process exited with code=${code}, signal=${signal}`
+        )
+        clearTimeout(forceKillTimeout)
         this.serverProcess = null
+        logger.debug('killServerProcess: Resolving after exit event')
         resolve()
       })
 
+      logger.debug('killServerProcess: Removing stdout/stderr listeners')
+      if (this.serverProcess.stdout) {
+        this.serverProcess.stdout.removeAllListeners()
+        this.serverProcess.stdout.destroy()
+      }
+      if (this.serverProcess.stderr) {
+        this.serverProcess.stderr.removeAllListeners()
+        this.serverProcess.stderr.destroy()
+      }
+      logger.debug('killServerProcess: Listeners removed')
+
       logger.info(`Sending SIGTERM to server process (PID: ${pid})`)
-      this.serverProcess.kill('SIGTERM')
+      try {
+        this.serverProcess.kill('SIGTERM')
+        logger.debug('killServerProcess: SIGTERM sent, waiting for exit event')
+      } catch {
+        logger.debug('killServerProcess: SIGTERM failed (process may be dead)')
+        clearTimeout(forceKillTimeout)
+        this.serverProcess = null
+        resolve()
+      }
     })
   }
 
