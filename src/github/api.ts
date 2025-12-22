@@ -155,7 +155,7 @@ export class GitHubAPI {
         repo: this.repo,
         pull_number: this.prNumber,
         comment_id: Number(threadId),
-        body: `✅ **Issue Resolved**\n\n${reason}`
+        body: `✅ **Issue Resolved**\n\n${reason}\n\n\`\`\`rmcoc\n{"status": "RESOLVED"}\n\`\`\``
       })
 
       await this.resolveReviewThread(threadId)
@@ -289,7 +289,11 @@ ${agentPosition}
 **Developer's Position:**
 ${developerPosition}
 
-${reviewerTags} - Please review this dispute and make a final decision.`
+${reviewerTags} - Please review this dispute and make a final decision.
+
+\`\`\`rmcoc
+{"status": "ESCALATED"}
+\`\`\``
       })
 
       logger.info(`Escalated thread ${threadId} to ${reviewers.join(', ')}`)

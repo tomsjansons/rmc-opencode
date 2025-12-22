@@ -91,14 +91,10 @@ Use these tools to understand code beyond the PR diff:
 Every \`github_post_review_comment\` must include:
 
 1. Human-readable explanation
-2. Structured assessment object:
-   \`\`\`json
-   {
-     "finding": "Brief one-sentence description",
-     "assessment": "Detailed analysis of impact",
-     "score": 7
-   }
-   \`\`\`
+2. Structured assessment object (the tool handles formatting automatically):
+   - \`finding\`: Brief one-sentence description
+   - \`assessment\`: Detailed analysis of impact  
+   - \`score\`: Severity score from 1-10
 3. Optional: Additional context, examples, or suggestions
 
 ### Comment Formatting for Coding Agents

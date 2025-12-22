@@ -35357,7 +35357,7 @@ class GitHubAPI {
                 repo: this.repo,
                 pull_number: this.prNumber,
                 comment_id: Number(threadId),
-                body: `✅ **Issue Resolved**\n\n${reason}`
+                body: `✅ **Issue Resolved**\n\n${reason}\n\n\`\`\`rmcoc\n{"status": "RESOLVED"}\n\`\`\``
             });
             await this.resolveReviewThread(threadId);
             logger.info(`Resolved thread ${threadId}`);
@@ -35445,7 +35445,11 @@ ${agentPosition}
 **Developer's Position:**
 ${developerPosition}
 
-${reviewerTags} - Please review this dispute and make a final decision.`
+${reviewerTags} - Please review this dispute and make a final decision.
+
+\`\`\`rmcoc
+{"status": "ESCALATED"}
+\`\`\``
             });
             logger.info(`Escalated thread ${threadId} to ${reviewers.join(', ')}`);
         }
@@ -37794,6 +37798,10 @@ class StateManager {
             if (!isBot) {
                 continue;
             }
+            const statusFromBlock = this.extractStatusFromRmcocBlock(reply.body);
+            if (statusFromBlock) {
+                return statusFromBlock;
+            }
             if (reply.body.includes('✅ **Issue Resolved**')) {
                 return 'RESOLVED';
             }
@@ -37803,8 +37811,28 @@ class StateManager {
         }
         return 'PENDING';
     }
+    extractStatusFromRmcocBlock(body) {
+        const match = body.match(/```rmcoc\s*(\{[\s\S]*?\})\s*```/);
+        if (!match?.[1]) {
+            return null;
+        }
+        try {
+            const parsed = JSON.parse(match[1]);
+            if (parsed.status === 'RESOLVED') {
+                return 'RESOLVED';
+            }
+            if (parsed.status === 'ESCALATED') {
+                return 'ESCALATED';
+            }
+        }
+        catch {
+            return null;
+        }
+        return null;
+    }
     extractAssessmentFromComment(body) {
         const patterns = [
+            /```rmcoc\s*(\{[\s\S]*?\})\s*```/,
             /```json\s*(\{[\s\S]*?\})\s*```/,
             /(\{\s*"finding"[\s\S]*?"score"\s*:\s*\d+\s*\})/
         ];
@@ -38210,14 +38238,10 @@ Use these tools to understand code beyond the PR diff:
 Every \`github_post_review_comment\` must include:
 
 1. Human-readable explanation
-2. Structured assessment object:
-   \`\`\`json
-   {
-     "finding": "Brief one-sentence description",
-     "assessment": "Detailed analysis of impact",
-     "score": 7
-   }
-   \`\`\`
+2. Structured assessment object (the tool handles formatting automatically):
+   - \`finding\`: Brief one-sentence description
+   - \`assessment\`: Detailed analysis of impact  
+   - \`score\`: Severity score from 1-10
 3. Optional: Additional context, examples, or suggestions
 
 ### Comment Formatting for Coding Agents
@@ -46865,7 +46889,7 @@ const appRouter = router({
                     reason: `Score ${input.assessment.score} below threshold ${config.scoring.problemThreshold}`
                 };
             }
-            const commentBody = `${input.body}\n\n---\n\`\`\`json\n${JSON.stringify(input.assessment, null, 2)}\n\`\`\``;
+            const commentBody = `${input.body}\n\n---\n\`\`\`rmcoc\n${JSON.stringify(input.assessment, null, 2)}\n\`\`\``;
             const commentId = await ctx.github.postReviewComment({
                 path: input.file,
                 line: input.line,

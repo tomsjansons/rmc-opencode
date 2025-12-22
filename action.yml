@@ -74,5 +74,5 @@ outputs:
     description: 'Number of blocking issues (score >= blocking_score_threshold)'
 
 runs:
-  using: node24
+  using: node20
   main: dist/index.js

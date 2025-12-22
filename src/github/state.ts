@@ -181,6 +181,11 @@ export class StateManager {
         continue
       }
 
+      const statusFromBlock = this.extractStatusFromRmcocBlock(reply.body)
+      if (statusFromBlock) {
+        return statusFromBlock
+      }
+
       if (reply.body.includes('✅ **Issue Resolved**')) {
         return 'RESOLVED'
       }
@@ -193,12 +198,36 @@ export class StateManager {
     return 'PENDING'
   }
 
+  private extractStatusFromRmcocBlock(
+    body: string
+  ): 'RESOLVED' | 'ESCALATED' | null {
+    const match = body.match(/```rmcoc\s*(\{[\s\S]*?\})\s*```/)
+    if (!match?.[1]) {
+      return null
+    }
+
+    try {
+      const parsed = JSON.parse(match[1])
+      if (parsed.status === 'RESOLVED') {
+        return 'RESOLVED'
+      }
+      if (parsed.status === 'ESCALATED') {
+        return 'ESCALATED'
+      }
+    } catch {
+      return null
+    }
+
+    return null
+  }
+
   private extractAssessmentFromComment(body: string): {
     finding: string
     assessment: string
     score: number
   } | null {
     const patterns = [
+      /```rmcoc\s*(\{[\s\S]*?\})\s*```/,
       /```json\s*(\{[\s\S]*?\})\s*```/,
       /(\{\s*"finding"[\s\S]*?"score"\s*:\s*\d+\s*\})/
     ]

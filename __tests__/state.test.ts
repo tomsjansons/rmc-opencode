@@ -231,7 +231,79 @@ describe('StateManager', () => {
       expect(state.threads[0].developer_replies?.[0].author).toBe('developer')
     })
 
-    it('should detect RESOLVED status from bot replies', async () => {
+    it('should detect RESOLVED status from rmcoc block', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: {
+          head: { sha: 'test-sha' }
+        }
+      })
+
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: '```rmcoc\n{"finding": "Test issue", "assessment": "Test assessment", "score": 7}\n```',
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
+          },
+          {
+            id: 1002,
+            path: 'src/test.ts',
+            line: 42,
+            body: '✅ **Issue Resolved**\n\nThe typo has been fixed.\n\n```rmcoc\n{"status": "RESOLVED"}\n```',
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T01:00:00.000Z',
+            in_reply_to_id: 1001
+          }
+        ]
+      })
+
+      const state = await stateManager.rebuildStateFromComments()
+
+      expect(state.threads).toHaveLength(1)
+      expect(state.threads[0].status).toBe('RESOLVED')
+    })
+
+    it('should detect ESCALATED status from rmcoc block', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: {
+          head: { sha: 'test-sha' }
+        }
+      })
+
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: '```rmcoc\n{"finding": "Test issue", "assessment": "Test assessment", "score": 7}\n```',
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
+          },
+          {
+            id: 1002,
+            path: 'src/test.ts',
+            line: 42,
+            body: '🔺 **Escalated to Human Review**\n\nThis needs human judgment.\n\n```rmcoc\n{"status": "ESCALATED"}\n```',
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T01:00:00.000Z',
+            in_reply_to_id: 1001
+          }
+        ]
+      })
+
+      const state = await stateManager.rebuildStateFromComments()
+
+      expect(state.threads).toHaveLength(1)
+      expect(state.threads[0].status).toBe('ESCALATED')
+    })
+
+    it('should fallback to legacy text markers for old comments', async () => {
       mockOctokit.pulls.get.mockResolvedValue({
         data: {
           head: { sha: 'test-sha' }
@@ -266,46 +338,41 @@ describe('StateManager', () => {
       expect(state.threads).toHaveLength(1)
       expect(state.threads[0].status).toBe('RESOLVED')
     })
-
-    it('should detect ESCALATED status from bot replies', async () => {
-      mockOctokit.pulls.get.mockResolvedValue({
-        data: {
-          head: { sha: 'test-sha' }
-        }
-      })
-
-      mockOctokit.pulls.listReviewComments.mockResolvedValue({
-        data: [
-          {
-            id: 1001,
-            path: 'src/test.ts',
-            line: 42,
-            body: '```json\n{"finding": "Test issue", "assessment": "Test assessment", "score": 7}\n```',
-            user: { login: 'github-actions[bot]' },
-            created_at: '2024-01-01T00:00:00.000Z',
-            in_reply_to_id: undefined
-          },
-          {
-            id: 1002,
-            path: 'src/test.ts',
-            line: 42,
-            body: '🔺 **Escalated to Human Review**\n\nThis needs human judgment.',
-            user: { login: 'github-actions[bot]' },
-            created_at: '2024-01-01T01:00:00.000Z',
-            in_reply_to_id: 1001
-          }
-        ]
-      })
-
-      const state = await stateManager.rebuildStateFromComments()
-
-      expect(state.threads).toHaveLength(1)
-      expect(state.threads[0].status).toBe('ESCALATED')
-    })
   })
 
   describe('extractAssessmentFromComment', () => {
-    it('should extract assessment from valid JSON block', () => {
+    it('should extract assessment from rmcoc block', () => {
+      const comment = `
+Some text before
+
+\`\`\`rmcoc
+{
+  "finding": "Test finding",
+  "assessment": "Test assessment",
+  "score": 7
+}
+\`\`\`
+
+Some text after
+      `
+
+      const assessment = (
+        stateManager as unknown as {
+          extractAssessmentFromComment: (body: string) => {
+            finding: string
+            assessment: string
+            score: number
+          } | null
+        }
+      ).extractAssessmentFromComment(comment)
+
+      expect(assessment).not.toBeNull()
+      expect(assessment?.finding).toBe('Test finding')
+      expect(assessment?.assessment).toBe('Test assessment')
+      expect(assessment?.score).toBe(7)
+    })
+
+    it('should fallback to JSON block for legacy comments', () => {
       const comment = `
 Some text before
 

@@ -55,7 +55,7 @@ export const appRouter = router({
           }
         }
 
-        const commentBody = `${input.body}\n\n---\n\`\`\`json\n${JSON.stringify(input.assessment, null, 2)}\n\`\`\``
+        const commentBody = `${input.body}\n\n---\n\`\`\`rmcoc\n${JSON.stringify(input.assessment, null, 2)}\n\`\`\``
 
         const commentId = await ctx.github.postReviewComment({
           path: input.file,
