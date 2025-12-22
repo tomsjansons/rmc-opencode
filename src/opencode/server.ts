@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -21,7 +21,12 @@ function getOpenCodeCLIPath(): string {
 type ServerStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
 
 type OpenCodeConfig = {
-  model: string
+  $schema: string
+  provider: {
+    openrouter: {
+      models: Record<string, { default?: boolean }>
+    }
+  }
   tools: {
     write: boolean
     bash: boolean
@@ -30,6 +35,13 @@ type OpenCodeConfig = {
   permission: {
     edit: 'deny'
     bash: 'deny'
+  }
+}
+
+type OpenCodeAuth = {
+  openrouter: {
+    type: 'api'
+    key: string
   }
 }
 
@@ -42,6 +54,7 @@ export class OpenCodeServer {
   private readonly healthCheckTimeoutMs = 30000
   private readonly shutdownTimeoutMs = 10000
   private configFilePath: string | null = null
+  private authFilePath: string | null = null
 
   constructor(private config: ReviewConfig) {
     this.healthCheckUrl = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`
@@ -176,9 +189,19 @@ export class OpenCodeServer {
     }
 
     const configPath = join(configDir, 'opencode.json')
+    const model = this.config.opencode.model
 
     const config: OpenCodeConfig = {
-      model: this.config.opencode.model,
+      $schema: 'https://opencode.ai/config.json',
+      provider: {
+        openrouter: {
+          models: {
+            [model]: {
+              default: true
+            }
+          }
+        }
+      },
       tools: {
         write: false,
         bash: false,
@@ -193,29 +216,70 @@ export class OpenCodeServer {
     try {
       writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8')
       logger.debug(`Created OpenCode config file: ${configPath}`)
-      return configPath
+      logger.debug(`Config contents: ${JSON.stringify(config, null, 2)}`)
     } catch (error) {
       throw new OpenCodeError(
         `Failed to write config file: ${error instanceof Error ? error.message : String(error)}`
       )
     }
+
+    this.createAuthFile()
+
+    return configPath
   }
 
-  private cleanupConfigFile(): void {
-    if (!this.configFilePath) {
-      return
-    }
+  private createAuthFile(): void {
+    const dataDir = join(homedir(), '.local', 'share', 'opencode')
 
     try {
-      unlinkSync(this.configFilePath)
-      logger.debug(`Removed config file: ${this.configFilePath}`)
+      mkdirSync(dataDir, { recursive: true })
     } catch (error) {
-      logger.warning(
-        `Failed to remove config file: ${error instanceof Error ? error.message : String(error)}`
+      throw new OpenCodeError(
+        `Failed to create auth directory: ${error instanceof Error ? error.message : String(error)}`
       )
     }
 
-    this.configFilePath = null
+    const authPath = join(dataDir, 'auth.json')
+    this.authFilePath = authPath
+
+    const auth: OpenCodeAuth = {
+      openrouter: { type: 'api', key: this.config.opencode.apiKey }
+    }
+
+    try {
+      writeFileSync(authPath, JSON.stringify(auth, null, 2), 'utf8')
+      logger.debug(`Created OpenCode auth file: ${authPath}`)
+    } catch (error) {
+      throw new OpenCodeError(
+        `Failed to write auth file: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  private cleanupConfigFile(): void {
+    if (this.configFilePath) {
+      try {
+        unlinkSync(this.configFilePath)
+        logger.debug(`Removed config file: ${this.configFilePath}`)
+      } catch (error) {
+        logger.warning(
+          `Failed to remove config file: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+      this.configFilePath = null
+    }
+
+    if (this.authFilePath) {
+      try {
+        unlinkSync(this.authFilePath)
+        logger.debug(`Removed auth file: ${this.authFilePath}`)
+      } catch (error) {
+        logger.warning(
+          `Failed to remove auth file: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+      this.authFilePath = null
+    }
   }
 
   private attachProcessHandlers(): void {

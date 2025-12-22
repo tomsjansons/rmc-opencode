@@ -7,9 +7,10 @@ import type {
 } from '../review/types.js'
 
 export function parseInputs(): ReviewConfig {
-  const apiKey = core.getInput('opencode_api_key', { required: true })
+  const apiKey = core.getInput('openrouter_api_key', { required: true })
   const model =
-    core.getInput('model', { required: false }) || 'google/gemini-flash-1.5'
+    core.getInput('model', { required: false }) ||
+    'anthropic/claude-sonnet-4-20250514'
   const enableWeb = core.getBooleanInput('enable_web', { required: false })
 
   const problemThreshold = parseNumericInput(

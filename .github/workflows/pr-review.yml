@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   review:
-    name: AI Code Review
+    name: Review My Code, OpenCode!
     if: |
       (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
       (github.event_name == 'issue_comment' && 
@@ -45,7 +45,7 @@ jobs:
       - name: Run OpenCode PR Reviewer
         uses: ./
         with:
-          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
+          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           model: 'anthropic/claude-sonnet-4-20250514'
           problem_score_threshold: '5'

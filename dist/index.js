@@ -29,7 +29,7 @@ import require$$2$3 from 'child_process';
 import require$$6 from 'timers';
 import { spawn } from 'node:child_process';
 import require$$1$a, { mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
-import require$$1$7, { tmpdir } from 'node:os';
+import require$$1$7, { tmpdir, homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdir, writeFile, readFile, readdir, copyFile } from 'node:fs/promises';
@@ -31262,8 +31262,9 @@ function requireGithub () {
 var githubExports = requireGithub();
 
 function parseInputs() {
-    const apiKey = coreExports.getInput('opencode_api_key', { required: true });
-    const model = coreExports.getInput('model', { required: false }) || 'google/gemini-flash-1.5';
+    const apiKey = coreExports.getInput('openrouter_api_key', { required: true });
+    const model = coreExports.getInput('model', { required: false }) ||
+        'anthropic/claude-sonnet-4-20250514';
     const enableWeb = coreExports.getBooleanInput('enable_web', { required: false });
     const problemThreshold = parseNumericInput('problem_score_threshold', 5, 1, 10, 'Problem score threshold must be between 1 and 10');
     const elevationThreshold = parseNumericInput('score_elevation_threshold', 5, 1, 100, 'Score elevation threshold must be between 1 and 100');
@@ -31357,9 +31358,18 @@ function detectExecutionMode(context) {
         throw new Error('This action was triggered by a comment but no bot mention was found. Skipping.');
     }
     if (context.eventName === 'pull_request') {
-        const prNumber = context.payload.pull_request?.number;
+        const pullRequest = context.payload.pull_request;
+        const prNumber = pullRequest?.number;
+        const action = context.payload.action;
         if (!prNumber) {
             throw new Error('This action can only be run on pull_request events. No PR number found in context.');
+        }
+        const allowedActions = ['opened', 'synchronize', 'ready_for_review'];
+        if (action && !allowedActions.includes(action)) {
+            throw new Error(`Skipping: pull_request action '${action}' is not supported. Supported actions: ${allowedActions.join(', ')}`);
+        }
+        if (pullRequest?.draft === true) {
+            throw new Error('Skipping: PR is a draft. Reviews will run when the PR is marked as ready for review.');
         }
         return {
             mode: 'full-review',
@@ -37160,6 +37170,7 @@ class OpenCodeServer {
     healthCheckTimeoutMs = 30000;
     shutdownTimeoutMs = 10000;
     configFilePath = null;
+    authFilePath = null;
     constructor(config) {
         this.config = config;
         this.healthCheckUrl = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`;
@@ -37259,8 +37270,18 @@ class OpenCodeServer {
             throw new OpenCodeError(`Failed to create config directory: ${error instanceof Error ? error.message : String(error)}`);
         }
         const configPath = join(configDir, 'opencode.json');
+        const model = this.config.opencode.model;
         const config = {
-            model: this.config.opencode.model,
+            $schema: 'https://opencode.ai/config.json',
+            provider: {
+                openrouter: {
+                    models: {
+                        [model]: {
+                            default: true
+                        }
+                    }
+                }
+            },
             tools: {
                 write: false,
                 bash: false,
@@ -37274,24 +37295,56 @@ class OpenCodeServer {
         try {
             writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
             logger$2.debug(`Created OpenCode config file: ${configPath}`);
-            return configPath;
+            logger$2.debug(`Config contents: ${JSON.stringify(config, null, 2)}`);
         }
         catch (error) {
             throw new OpenCodeError(`Failed to write config file: ${error instanceof Error ? error.message : String(error)}`);
         }
+        this.createAuthFile();
+        return configPath;
     }
-    cleanupConfigFile() {
-        if (!this.configFilePath) {
-            return;
-        }
+    createAuthFile() {
+        const dataDir = join(homedir(), '.local', 'share', 'opencode');
         try {
-            unlinkSync(this.configFilePath);
-            logger$2.debug(`Removed config file: ${this.configFilePath}`);
+            mkdirSync(dataDir, { recursive: true });
         }
         catch (error) {
-            logger$2.warning(`Failed to remove config file: ${error instanceof Error ? error.message : String(error)}`);
+            throw new OpenCodeError(`Failed to create auth directory: ${error instanceof Error ? error.message : String(error)}`);
         }
-        this.configFilePath = null;
+        const authPath = join(dataDir, 'auth.json');
+        this.authFilePath = authPath;
+        const auth = {
+            openrouter: this.config.opencode.apiKey
+        };
+        try {
+            writeFileSync(authPath, JSON.stringify(auth, null, 2), 'utf8');
+            logger$2.debug(`Created OpenCode auth file: ${authPath}`);
+        }
+        catch (error) {
+            throw new OpenCodeError(`Failed to write auth file: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    cleanupConfigFile() {
+        if (this.configFilePath) {
+            try {
+                unlinkSync(this.configFilePath);
+                logger$2.debug(`Removed config file: ${this.configFilePath}`);
+            }
+            catch (error) {
+                logger$2.warning(`Failed to remove config file: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            this.configFilePath = null;
+        }
+        if (this.authFilePath) {
+            try {
+                unlinkSync(this.authFilePath);
+                logger$2.debug(`Removed auth file: ${this.authFilePath}`);
+            }
+            catch (error) {
+                logger$2.warning(`Failed to remove auth file: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            this.authFilePath = null;
+        }
     }
     attachProcessHandlers() {
         if (!this.serverProcess) {

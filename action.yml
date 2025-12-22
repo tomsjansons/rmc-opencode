@@ -10,13 +10,15 @@ branding:
 
 # Define your inputs here.
 inputs:
-  opencode_api_key:
-    description: 'API key for OpenCode SDK'
+  openrouter_api_key:
+    description: 'OpenRouter API key for LLM access'
     required: true
   model:
-    description: 'LLM model to use (e.g., google/gemini-flash-1.5)'
+    description:
+      'LLM model to use via OpenRouter (e.g.,
+      anthropic/claude-sonnet-4-20250514)'
     required: false
-    default: 'google/gemini-flash-1.5'
+    default: 'anthropic/claude-sonnet-4-20250514'
   problem_score_threshold:
     description: 'Minimum score (1-10) for reporting issues'
     required: false
