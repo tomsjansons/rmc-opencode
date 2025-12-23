@@ -38427,7 +38427,45 @@ This prevents the security vulnerability where expired tokens could still be acc
 This function has a bug with token expiration.
 \`\`\`
 
-**IMPORTANT:** Never create GitHub's native "Suggestions" (committable code blocks). Only use markdown code blocks and pseudo-code for illustration.`;
+**IMPORTANT:** Never create GitHub's native "Suggestions" (committable code blocks). Only use markdown code blocks and pseudo-code for illustration.
+
+### Comment Content Rules (CRITICAL)
+
+Your review comments must be **publication-ready**. They will be posted directly to GitHub without any editing.
+
+**DO NOT include in comments:**
+- Internal reasoning or thought process (e.g., "let me think...", "wait...", "actually...")
+- Self-corrections (e.g., "Correction:", "On second thought...")
+- Uncertainty markers (e.g., "I think...", "maybe...", "perhaps...")
+- Meta-commentary about your analysis process
+- Incomplete sentences or trailing thoughts
+- Questions to yourself
+- Draft notes or placeholder text
+
+**Every comment MUST be:**
+- Complete and self-contained
+- Written in professional, confident language
+- Ready to be read by the PR author without confusion
+- Free of any "thinking out loud" content
+
+**If you realize mid-thought that your analysis is incomplete or incorrect:**
+- Do NOT post the comment
+- Re-analyze silently
+- Only post when you have a complete, correct finding
+
+**Example of BAD comment (contains thinking):**
+\`\`\`
+The StateManager makes direct HTTP calls... wait, let me check if it has access to OpenCodeClient.
+Correction: StateManager only has ReviewConfig. The OpenCodeClient is in main.ts...
+Actually, the Orchestrator has both. So the fix would be to pass...
+\`\`\`
+
+**Example of GOOD comment (publication-ready):**
+\`\`\`
+The \`StateManager\` class makes direct HTTP requests to the OpenRouter API, bypassing the \`OpenCodeClient\` abstraction.
+
+**Recommendation:** Pass the \`OpenCodeClient\` instance to \`StateManager\` via the \`Orchestrator\`, or extract the sentiment analysis into a service method on the \`Orchestrator\` that uses the existing client.
+\`\`\``;
 const SYSTEM_PROMPT = `# OpenCode PR Review Agent
 
 You are a Senior Developer conducting a thorough multi-pass code review. You will perform 4 sequential passes, each building on the previous one.
@@ -43234,6 +43272,151 @@ SuperJSON.registerCustom;
 SuperJSON.registerSymbol;
 SuperJSON.allowErrorProps;
 
+const THINKING_PATTERNS = [
+    /\bwait\b/i,
+    /\bactually\b/i,
+    /\bcorrection:/i,
+    /\bon second thought\b/i,
+    /\blet me (?:think|check|see|reconsider)\b/i,
+    /\bhmm\b/i,
+    /\bi think\b/i,
+    /\bmaybe\b/i,
+    /\bperhaps\b/i,
+    /\bi(?:'m| am) not sure\b/i,
+    /\bi need to\b/i,
+    /\bhold on\b/i,
+    /\bnevermind\b/i,
+    /\bignore (?:that|this|the above)\b/i,
+    /\bsorry,? (?:i|let me)\b/i,
+    /\bno,? wait\b/i,
+    /\.{3,}\s*(?:wait|actually|hmm)/i,
+    /\((?:thinking|checking|wait)\)/i
+];
+const INCOMPLETE_PATTERNS = [
+    /\.\.\.\s*$/,
+    /\bso\s*$/i,
+    /\bbut\s*$/i,
+    /\band\s*$/i,
+    /\bwhich means\s*$/i,
+    /:\s*$/
+];
+const SELF_CORRECTION_PATTERNS = [
+    /\bcorrection\b/i,
+    /\bstrike that\b/i,
+    /\bscratch that\b/i,
+    /\bi was wrong\b/i,
+    /\bi misspoke\b/i,
+    /\bthat's not right\b/i,
+    /\blet me rephrase\b/i,
+    /\bto clarify what i meant\b/i
+];
+function detectSuspectedThinking(commentBody) {
+    const matchedPatterns = [];
+    for (const pattern of THINKING_PATTERNS) {
+        if (pattern.test(commentBody)) {
+            matchedPatterns.push(`thinking: ${pattern.source}`);
+        }
+    }
+    for (const pattern of INCOMPLETE_PATTERNS) {
+        if (pattern.test(commentBody)) {
+            matchedPatterns.push(`incomplete: ${pattern.source}`);
+        }
+    }
+    for (const pattern of SELF_CORRECTION_PATTERNS) {
+        if (pattern.test(commentBody)) {
+            matchedPatterns.push(`self-correction: ${pattern.source}`);
+        }
+    }
+    return {
+        suspected: matchedPatterns.length > 0,
+        matchedPatterns
+    };
+}
+async function verifyThinkingContent(commentBody, apiKey, model) {
+    const prompt = `You are a quality assurance checker for code review comments. Your task is to determine if a comment contains internal "thinking" or reasoning that should not be published.
+
+A comment contains problematic "thinking" if it includes:
+- Self-corrections mid-thought (e.g., "wait...", "actually...", "Correction:")
+- Uncertainty or hedging (e.g., "I think...", "maybe...", "perhaps...")
+- Incomplete reasoning (e.g., trailing thoughts, unfinished sentences)
+- Meta-commentary about the analysis process
+- Internal dialogue or questions to self
+- Draft notes that weren't cleaned up
+
+A comment is CLEAN if it:
+- Is complete and self-contained
+- Uses confident, professional language
+- Is ready to be read by a developer without confusion
+- May include hedging words in APPROPRIATE context (e.g., "You might want to consider..." is fine)
+
+Comment to analyze:
+"""
+${commentBody.replace(/"""/g, '\\"\\"\\"')}
+"""
+
+Does this comment contain problematic internal "thinking" that should not be published?
+
+Respond with ONLY "yes" or "no".`;
+    try {
+        const response = await fetch(OPENROUTER_API_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${apiKey}`,
+                'HTTP-Referer': 'https://github.com/opencode-pr-reviewer',
+                'X-Title': 'OpenCode PR Reviewer - Comment Validator'
+            },
+            body: JSON.stringify({
+                model,
+                messages: [{ role: 'user', content: prompt }],
+                temperature: 0.1,
+                max_tokens: 10
+            })
+        });
+        if (!response.ok) {
+            logger.warning(`Comment validation API call failed: ${response.status}, allowing comment`);
+            return false;
+        }
+        const data = (await response.json());
+        const content = data.choices?.[0]?.message?.content?.trim().toLowerCase();
+        if (content === 'yes') {
+            return true;
+        }
+        return false;
+    }
+    catch (error) {
+        logger.warning(`Comment validation failed with error: ${error}, allowing comment`);
+        return false;
+    }
+}
+async function validateComment(commentBody, apiKey, model) {
+    const { suspected, matchedPatterns } = detectSuspectedThinking(commentBody);
+    if (!suspected) {
+        return {
+            isValid: true,
+            suspectedThinking: false,
+            confirmedThinking: false
+        };
+    }
+    logger.debug(`Comment flagged for potential thinking content. Patterns: ${matchedPatterns.join(', ')}`);
+    const confirmed = await verifyThinkingContent(commentBody, apiKey, model);
+    if (confirmed) {
+        return {
+            isValid: false,
+            suspectedThinking: true,
+            confirmedThinking: true,
+            reason: 'Comment contains internal thinking/reasoning that should not be published. Please rephrase as a clear, professional review comment.',
+            patterns: matchedPatterns
+        };
+    }
+    return {
+        isValid: true,
+        suspectedThinking: true,
+        confirmedThinking: false,
+        patterns: matchedPatterns
+    };
+}
+
 var util;
 (function (util) {
     util.assertEqual = (_) => { };
@@ -47085,6 +47268,18 @@ const appRouter = router({
                     reason: `Duplicate: existing unresolved thread ${existingThread.id} with similar finding`
                 };
             }
+            const validation = await validateComment(input.body, config.opencode.apiKey, config.opencode.model);
+            if (!validation.isValid) {
+                logger.warning(`Comment rejected due to thinking content: ${validation.patterns?.join(', ')}`);
+                return {
+                    filtered: true,
+                    reason: validation.reason,
+                    requiresRephrasing: true
+                };
+            }
+            if (validation.suspectedThinking && !validation.confirmedThinking) {
+                logger.debug(`Comment passed validation despite suspected patterns: ${validation.patterns?.join(', ')}`);
+            }
             const commentBody = `${input.body}\n\n---\n\`\`\`rmcoc\n${JSON.stringify(input.assessment, null, 2)}\n\`\`\``;
             const commentId = await ctx.github.postReviewComment({
                 path: input.file,
@@ -47119,6 +47314,16 @@ const appRouter = router({
             if (thread?.status === 'RESOLVED') {
                 logger.info(`Thread ${input.threadId} is already resolved, skipping reply`);
                 return { success: true, skipped: true };
+            }
+            const config = ctx.orchestrator.getConfig();
+            const validation = await validateComment(input.body, config.opencode.apiKey, config.opencode.model);
+            if (!validation.isValid) {
+                logger.warning(`Reply rejected due to thinking content: ${validation.patterns?.join(', ')}`);
+                return {
+                    success: false,
+                    reason: validation.reason,
+                    requiresRephrasing: true
+                };
             }
             await ctx.github.replyToComment(input.threadId, input.body);
             if (input.isConcession) {

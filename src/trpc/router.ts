@@ -4,6 +4,7 @@ import superjson from 'superjson'
 import type { GitHubAPI } from '../github/api.js'
 import type { ReviewOrchestrator } from '../review/orchestrator.js'
 import { logger } from '../utils/logger.js'
+import { validateComment } from './comment-validator.js'
 import {
   escalateDisputeSchema,
   postReviewCommentSchema,
@@ -71,6 +72,29 @@ export const appRouter = router({
           }
         }
 
+        const validation = await validateComment(
+          input.body,
+          config.opencode.apiKey,
+          config.opencode.model
+        )
+
+        if (!validation.isValid) {
+          logger.warning(
+            `Comment rejected due to thinking content: ${validation.patterns?.join(', ')}`
+          )
+          return {
+            filtered: true,
+            reason: validation.reason,
+            requiresRephrasing: true
+          }
+        }
+
+        if (validation.suspectedThinking && !validation.confirmedThinking) {
+          logger.debug(
+            `Comment passed validation despite suspected patterns: ${validation.patterns?.join(', ')}`
+          )
+        }
+
         const commentBody = `${input.body}\n\n---\n\`\`\`rmcoc\n${JSON.stringify(input.assessment, null, 2)}\n\`\`\``
 
         const commentId = await ctx.github.postReviewComment({
@@ -114,6 +138,24 @@ export const appRouter = router({
             `Thread ${input.threadId} is already resolved, skipping reply`
           )
           return { success: true, skipped: true }
+        }
+
+        const config = ctx.orchestrator.getConfig()
+        const validation = await validateComment(
+          input.body,
+          config.opencode.apiKey,
+          config.opencode.model
+        )
+
+        if (!validation.isValid) {
+          logger.warning(
+            `Reply rejected due to thinking content: ${validation.patterns?.join(', ')}`
+          )
+          return {
+            success: false,
+            reason: validation.reason,
+            requiresRephrasing: true
+          }
         }
 
         await ctx.github.replyToComment(input.threadId, input.body)
