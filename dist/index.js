@@ -37136,11 +37136,14 @@ function createOpencodeClient(config) {
     return new OpencodeClient({ client });
 }
 
+const MAX_REPEATED_TOOL_CALLS = 5;
+const LOOP_DETECTION_WINDOW = 10;
 class OpenCodeClientImpl {
     currentSessionId = null;
     client;
     debugLogging;
     timeoutMs;
+    recentToolCalls = [];
     constructor(serverUrl, debugLogging = false, timeoutMs = 600000) {
         this.client = createOpencodeClient({
             baseUrl: serverUrl,
@@ -37148,6 +37151,36 @@ class OpenCodeClientImpl {
         });
         this.debugLogging = debugLogging;
         this.timeoutMs = timeoutMs;
+    }
+    resetLoopDetection() {
+        this.recentToolCalls = [];
+    }
+    detectLoop(toolCall) {
+        this.recentToolCalls.push(toolCall);
+        if (this.recentToolCalls.length > LOOP_DETECTION_WINDOW) {
+            this.recentToolCalls.shift();
+        }
+        if (this.recentToolCalls.length < MAX_REPEATED_TOOL_CALLS) {
+            return false;
+        }
+        const callCounts = new Map();
+        for (const call of this.recentToolCalls) {
+            callCounts.set(call, (callCounts.get(call) || 0) + 1);
+        }
+        for (const [call, count] of callCounts) {
+            if (count >= MAX_REPEATED_TOOL_CALLS) {
+                logger.warning(`Loop detected: tool call "${call}" repeated ${count} times in last ${LOOP_DETECTION_WINDOW} calls`);
+                return true;
+            }
+        }
+        const recentCalls = this.recentToolCalls.slice(-MAX_REPEATED_TOOL_CALLS);
+        const uniqueCalls = new Set(recentCalls);
+        if (uniqueCalls.size <= 2 &&
+            recentCalls.length >= MAX_REPEATED_TOOL_CALLS) {
+            logger.warning(`Loop detected: only ${uniqueCalls.size} unique tool calls in last ${recentCalls.length} calls: ${[...uniqueCalls].join(', ')}`);
+            return true;
+        }
+        return false;
     }
     async createSession(title) {
         try {
@@ -37236,6 +37269,7 @@ class OpenCodeClientImpl {
         const startTime = Date.now();
         const abortController = new AbortController();
         let sawBusy = false;
+        this.resetLoopDetection();
         return new Promise((resolve, reject) => {
             let resolved = false;
             const timeoutId = setTimeout(() => {
@@ -37262,6 +37296,21 @@ class OpenCodeClientImpl {
                         const props = event.properties;
                         if (props.sessionID !== sessionId) {
                             continue;
+                        }
+                        if (event.type === 'message.part.updated' &&
+                            props.part?.type === 'tool') {
+                            const part = props.part;
+                            const toolName = part.tool || 'unknown';
+                            const toolInput = part.input
+                                ? JSON.stringify(part.input).substring(0, 200)
+                                : '';
+                            const toolSignature = `${toolName}:${toolInput}`;
+                            if (this.detectLoop(toolSignature)) {
+                                resolved = true;
+                                cleanup();
+                                reject(new OpenCodeError(`Loop detected: Agent is repeatedly calling the same tools with same arguments. This usually indicates the agent is stuck. Aborting session.`));
+                                return;
+                            }
                         }
                         if (event.type === 'session.status' &&
                             props.status &&

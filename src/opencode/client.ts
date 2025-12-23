@@ -16,11 +16,15 @@ export type OpenCodeClient = {
 
 type OpenCodeSDKClient = ReturnType<typeof createOpencodeClient>
 
+const MAX_REPEATED_TOOL_CALLS = 5
+const LOOP_DETECTION_WINDOW = 10
+
 export class OpenCodeClientImpl implements OpenCodeClient {
   private currentSessionId: string | null = null
   private client: OpenCodeSDKClient
   private debugLogging: boolean
   private timeoutMs: number
+  private recentToolCalls: string[] = []
 
   constructor(
     serverUrl: string,
@@ -33,6 +37,50 @@ export class OpenCodeClientImpl implements OpenCodeClient {
     })
     this.debugLogging = debugLogging
     this.timeoutMs = timeoutMs
+  }
+
+  private resetLoopDetection(): void {
+    this.recentToolCalls = []
+  }
+
+  private detectLoop(toolCall: string): boolean {
+    this.recentToolCalls.push(toolCall)
+
+    if (this.recentToolCalls.length > LOOP_DETECTION_WINDOW) {
+      this.recentToolCalls.shift()
+    }
+
+    if (this.recentToolCalls.length < MAX_REPEATED_TOOL_CALLS) {
+      return false
+    }
+
+    const callCounts = new Map<string, number>()
+    for (const call of this.recentToolCalls) {
+      callCounts.set(call, (callCounts.get(call) || 0) + 1)
+    }
+
+    for (const [call, count] of callCounts) {
+      if (count >= MAX_REPEATED_TOOL_CALLS) {
+        logger.warning(
+          `Loop detected: tool call "${call}" repeated ${count} times in last ${LOOP_DETECTION_WINDOW} calls`
+        )
+        return true
+      }
+    }
+
+    const recentCalls = this.recentToolCalls.slice(-MAX_REPEATED_TOOL_CALLS)
+    const uniqueCalls = new Set(recentCalls)
+    if (
+      uniqueCalls.size <= 2 &&
+      recentCalls.length >= MAX_REPEATED_TOOL_CALLS
+    ) {
+      logger.warning(
+        `Loop detected: only ${uniqueCalls.size} unique tool calls in last ${recentCalls.length} calls: ${[...uniqueCalls].join(', ')}`
+      )
+      return true
+    }
+
+    return false
   }
 
   async createSession(title: string): Promise<Session> {
@@ -153,6 +201,8 @@ export class OpenCodeClientImpl implements OpenCodeClient {
     const abortController = new AbortController()
     let sawBusy = false
 
+    this.resetLoopDetection()
+
     return new Promise<void>((resolve, reject) => {
       let resolved = false
 
@@ -189,10 +239,38 @@ export class OpenCodeClientImpl implements OpenCodeClient {
             const props = event.properties as {
               sessionID?: string
               status?: { type: string; attempt?: number; message?: string }
+              part?: { type: string; tool?: string; state?: { status: string } }
             }
 
             if (props.sessionID !== sessionId) {
               continue
+            }
+
+            if (
+              event.type === 'message.part.updated' &&
+              props.part?.type === 'tool'
+            ) {
+              const part = props.part as {
+                tool?: string
+                input?: Record<string, unknown>
+                state?: { status: string }
+              }
+              const toolName = part.tool || 'unknown'
+              const toolInput = part.input
+                ? JSON.stringify(part.input).substring(0, 200)
+                : ''
+              const toolSignature = `${toolName}:${toolInput}`
+
+              if (this.detectLoop(toolSignature)) {
+                resolved = true
+                cleanup()
+                reject(
+                  new OpenCodeError(
+                    `Loop detected: Agent is repeatedly calling the same tools with same arguments. This usually indicates the agent is stuck. Aborting session.`
+                  )
+                )
+                return
+              }
             }
 
             if (
