@@ -714,7 +714,6 @@ export type PostReviewCommentArgs = {
 
       await stateManager.recordPassCompletion({
         number: 1,
-        summary: 'Pass 1 completed',
         completed: true,
         has_blocking_issues: false
       })
@@ -732,14 +731,12 @@ export type PostReviewCommentArgs = {
 
       await stateManager.recordPassCompletion({
         number: 1,
-        summary: 'Pass 1 initial',
         completed: false,
         has_blocking_issues: false
       })
 
       await stateManager.recordPassCompletion({
         number: 1,
-        summary: 'Pass 1 completed',
         completed: true,
         has_blocking_issues: true
       })

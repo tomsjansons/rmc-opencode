@@ -355,11 +355,14 @@ export class ReviewOrchestrator {
     }
   }
 
+  isPassCompleted(passNumber: number): boolean {
+    return this.passResults.some((p) => p.passNumber === passNumber)
+  }
+
   recordPassCompletion(result: PassResult): void {
     logger.info(
       `Pass ${result.passNumber} completed: ${result.hasBlockingIssues ? 'HAS BLOCKING ISSUES' : 'no blocking issues'}`
     )
-    logger.debug(`Pass ${result.passNumber} summary: ${result.summary}`)
 
     const existingIndex = this.passResults.findIndex(
       (p) => p.passNumber === result.passNumber
@@ -375,7 +378,6 @@ export class ReviewOrchestrator {
       this.stateManager
         .recordPassCompletion({
           number: result.passNumber,
-          summary: result.summary,
           completed: true,
           has_blocking_issues: result.hasBlockingIssues
         })

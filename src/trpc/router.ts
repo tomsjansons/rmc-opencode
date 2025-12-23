@@ -249,9 +249,23 @@ export const appRouter = router({
           `tRPC: review.submitPassResults called for pass ${input.passNumber}`
         )
 
+        const alreadyCompleted = ctx.orchestrator.isPassCompleted(
+          input.passNumber
+        )
+
+        if (alreadyCompleted) {
+          logger.warning(
+            `Pass ${input.passNumber} already completed - rejecting duplicate submission`
+          )
+          return {
+            success: false,
+            error: `Pass ${input.passNumber} has already been completed. Do not call submit_pass_results again for this pass.`,
+            nextPass: null
+          }
+        }
+
         ctx.orchestrator.recordPassCompletion({
           passNumber: input.passNumber,
-          summary: input.summary,
           hasBlockingIssues: input.hasBlockingIssues
         })
 
@@ -263,6 +277,7 @@ export const appRouter = router({
 
         return {
           success: true,
+          error: null,
           nextPass
         }
       })

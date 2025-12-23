@@ -23,15 +23,16 @@ export default tool({
       .min(1)
       .max(4)
       .describe('Pass number that was completed (1-4)'),
-    summary: tool.schema
-      .string()
-      .describe('Brief summary of what was reviewed in this pass'),
     hasBlockingIssues: tool.schema
       .boolean()
       .describe('Whether blocking issues (score >= 8) were found')
   },
   async execute(args) {
     const result = await trpc.review.submitPassResults.mutate(args)
+
+    if (!result.success) {
+      return `Error: ${result.error}`
+    }
 
     if (result.nextPass) {
       return `Pass ${args.passNumber} complete. Ready for Pass ${result.nextPass}.`

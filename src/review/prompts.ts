@@ -66,10 +66,11 @@ const TOOL_USAGE_GUIDELINES = `## Tool Usage Guidelines
 - Returns threads with status: PENDING, RESOLVED, or DISPUTED
 - Call at start of review to understand existing context
 
-**\`submit_pass_results(pass_number, summary, has_blocking_issues)\`**
+**\`submit_pass_results(pass_number, has_blocking_issues)\`**
 - Marks current pass as complete
 - Triggers orchestrator to provide next pass prompt
 - Required at end of each pass
+- Will reject duplicate submissions for the same pass number
 
 ### OpenCode Exploration Tools
 
@@ -306,7 +307,7 @@ ${files.map((f) => `- ${f}`).join('\n')}
 
 **Tip:** Start by reading the most critical files first (e.g., source code over config files).
 
-When you have completed this pass, call \`submit_pass_results(1, summary, has_blocking_issues)\`.`,
+When you have completed this pass, call \`submit_pass_results(1, has_blocking_issues)\`.`,
 
   PASS_2: () => `## Pass 2 of 3: Structural/Layered Review
 
@@ -329,7 +330,7 @@ Use \`read\`, \`grep\`, \`glob\`, and \`list\` tools to explore the codebase and
 
 Post comments for any structural issues you find using \`github_post_review_comment\`.
 
-When you have completed this pass, call \`submit_pass_results(2, summary, has_blocking_issues)\`.`,
+When you have completed this pass, call \`submit_pass_results(2, has_blocking_issues)\`.`,
 
   PASS_3: (
     securitySensitivity: string
@@ -357,7 +358,7 @@ Conduct a thorough security review of the changes. Remember to elevate security 
 
 Post comments for any security or compliance issues using \`github_post_review_comment\`.
 
-When you have completed this pass, call \`submit_pass_results(3, summary, has_blocking_issues)\` to finalize the review.`,
+When you have completed this pass, call \`submit_pass_results(3, has_blocking_issues)\` to finalize the review.`,
 
   FIX_VERIFICATION: (
     previousIssues: string,

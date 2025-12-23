@@ -83,7 +83,6 @@ export type ReviewState = {
 
 export type PassResult = {
   passNumber: number
-  summary: string
   hasBlockingIssues: boolean
 }
 

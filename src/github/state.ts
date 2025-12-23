@@ -33,7 +33,6 @@ export type ReviewThread = {
 
 export type PassResult = {
   number: number
-  summary: string
   completed: boolean
   has_blocking_issues: boolean
 }
