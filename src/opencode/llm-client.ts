@@ -1,8 +1,13 @@
 import { OPENROUTER_API_URL } from '../config/constants.js'
 import { logger } from '../utils/logger.js'
 
+type CompletionOptions = {
+  maxTokens?: number
+  temperature?: number
+}
+
 export type LLMClient = {
-  complete(prompt: string): Promise<string | null>
+  complete(prompt: string, options?: CompletionOptions): Promise<string | null>
 }
 
 type LLMClientConfig = {
@@ -10,10 +15,16 @@ type LLMClientConfig = {
   model: string
 }
 
+const DEFAULT_MAX_TOKENS = 10
+const DEFAULT_TEMPERATURE = 0.1
+
 export class LLMClientImpl implements LLMClient {
   constructor(private config: LLMClientConfig) {}
 
-  async complete(prompt: string): Promise<string | null> {
+  async complete(
+    prompt: string,
+    options?: CompletionOptions
+  ): Promise<string | null> {
     const requestBody = {
       model: this.config.model,
       messages: [
@@ -22,8 +33,8 @@ export class LLMClientImpl implements LLMClient {
           content: prompt
         }
       ],
-      temperature: 0.1,
-      max_tokens: 10
+      temperature: options?.temperature ?? DEFAULT_TEMPERATURE,
+      max_tokens: options?.maxTokens ?? DEFAULT_MAX_TOKENS
     }
 
     try {
