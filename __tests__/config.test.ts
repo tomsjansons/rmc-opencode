@@ -18,7 +18,8 @@ describe('Configuration Parser', () => {
         opencode: {
           apiKey: 'test-key',
           model: 'test-model',
-          enableWeb: false
+          enableWeb: false,
+          debugLogging: false
         },
         scoring: {
           problemThreshold: 5,
@@ -38,6 +39,10 @@ describe('Configuration Parser', () => {
           enableHumanEscalation: false,
           humanReviewers: []
         },
+        security: {
+          injectionDetectionEnabled: true,
+          injectionVerificationModel: 'openai/gpt-4o-mini'
+        },
         execution: {
           mode: 'full-review'
         }
@@ -47,11 +52,12 @@ describe('Configuration Parser', () => {
     })
 
     it('should throw error for missing API key', () => {
-      const invalidConfig: ReviewConfig = {
+      const invalidConfig = {
         opencode: {
           apiKey: '',
           model: 'test-model',
-          enableWeb: false
+          enableWeb: false,
+          debugLogging: false
         },
         scoring: {
           problemThreshold: 5,
@@ -62,8 +68,12 @@ describe('Configuration Parser', () => {
           owner: 'test-owner',
           repo: 'test-repo',
           prNumber: 123
+        },
+        security: {
+          injectionDetectionEnabled: true,
+          injectionVerificationModel: 'openai/gpt-4o-mini'
         }
-      }
+      } as ReviewConfig
 
       expect(() => validateConfig(invalidConfig)).toThrow(
         'OpenCode API key is required'
@@ -71,23 +81,28 @@ describe('Configuration Parser', () => {
     })
 
     it('should throw error for invalid problem threshold - too high', () => {
-      const invalidConfig: ReviewConfig = {
+      const invalidConfig = {
         opencode: {
           apiKey: 'test-key',
           model: 'test-model',
-          enableWeb: false
+          enableWeb: false,
+          debugLogging: false
         },
         scoring: {
           problemThreshold: 11,
-          blockingThreshold: 11 // Invalid: > 10
+          blockingThreshold: 11
         },
         github: {
           token: 'test-token',
           owner: 'test-owner',
           repo: 'test-repo',
           prNumber: 123
+        },
+        security: {
+          injectionDetectionEnabled: true,
+          injectionVerificationModel: 'openai/gpt-4o-mini'
         }
-      }
+      } as ReviewConfig
 
       expect(() => validateConfig(invalidConfig)).toThrow(
         'Problem threshold must be between 1 and 10'
@@ -95,23 +110,28 @@ describe('Configuration Parser', () => {
     })
 
     it('should throw error for invalid problem threshold - too low', () => {
-      const invalidConfig: ReviewConfig = {
+      const invalidConfig = {
         opencode: {
           apiKey: 'test-key',
           model: 'test-model',
-          enableWeb: false
+          enableWeb: false,
+          debugLogging: false
         },
         scoring: {
           problemThreshold: 0,
-          blockingThreshold: 0 // Invalid: < 1
+          blockingThreshold: 0
         },
         github: {
           token: 'test-token',
           owner: 'test-owner',
           repo: 'test-repo',
           prNumber: 123
+        },
+        security: {
+          injectionDetectionEnabled: true,
+          injectionVerificationModel: 'openai/gpt-4o-mini'
         }
-      }
+      } as ReviewConfig
 
       expect(() => validateConfig(invalidConfig)).toThrow(
         'Problem threshold must be between 1 and 10'
@@ -123,7 +143,8 @@ describe('Configuration Parser', () => {
         opencode: {
           apiKey: 'test-key',
           model: 'test-model',
-          enableWeb: false
+          enableWeb: false,
+          debugLogging: false
         },
         scoring: {
           problemThreshold: 5,
@@ -137,11 +158,15 @@ describe('Configuration Parser', () => {
           token: 'test-token',
           owner: 'test-owner',
           repo: 'test-repo',
-          prNumber: 0 // Invalid
+          prNumber: 0
         },
         dispute: {
           enableHumanEscalation: false,
           humanReviewers: []
+        },
+        security: {
+          injectionDetectionEnabled: true,
+          injectionVerificationModel: 'openai/gpt-4o-mini'
         },
         execution: {
           mode: 'full-review'
@@ -158,7 +183,8 @@ describe('Configuration Parser', () => {
         opencode: {
           apiKey: 'test-key',
           model: 'test-model',
-          enableWeb: false
+          enableWeb: false,
+          debugLogging: false
         },
         scoring: {
           problemThreshold: 5,
@@ -178,6 +204,10 @@ describe('Configuration Parser', () => {
           enableHumanEscalation: false,
           humanReviewers: []
         },
+        security: {
+          injectionDetectionEnabled: true,
+          injectionVerificationModel: 'openai/gpt-4o-mini'
+        },
         execution: {
           mode: 'full-review'
         }
@@ -189,11 +219,12 @@ describe('Configuration Parser', () => {
     })
 
     it('should throw error for missing model', () => {
-      const invalidConfig: ReviewConfig = {
+      const invalidConfig = {
         opencode: {
           apiKey: 'test-key',
           model: '',
-          enableWeb: false
+          enableWeb: false,
+          debugLogging: false
         },
         scoring: {
           problemThreshold: 5,
@@ -204,8 +235,12 @@ describe('Configuration Parser', () => {
           owner: 'test-owner',
           repo: 'test-repo',
           prNumber: 123
+        },
+        security: {
+          injectionDetectionEnabled: true,
+          injectionVerificationModel: 'openai/gpt-4o-mini'
         }
-      }
+      } as ReviewConfig
 
       expect(() => validateConfig(invalidConfig)).toThrow(
         'Model name is required'

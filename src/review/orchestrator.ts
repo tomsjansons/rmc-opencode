@@ -11,6 +11,10 @@ import type { OpenCodeClient } from '../opencode/client.js'
 import type { LLMClient } from '../opencode/llm-client.js'
 import { OrchestratorError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
+import {
+  type PromptInjectionDetector,
+  createPromptInjectionDetector
+} from '../utils/prompt-injection-detector.js'
 import { REVIEW_PROMPTS, buildSecuritySensitivity } from './prompts.js'
 import type {
   DisputeContext,
@@ -29,6 +33,7 @@ type ReviewPhase =
 
 export class ReviewOrchestrator {
   private stateManager: StateManager
+  private injectionDetector: PromptInjectionDetector
   private passResults: PassResult[] = []
   private reviewState: ReviewState | null = null
   private currentSessionId: string | null = null
@@ -42,6 +47,11 @@ export class ReviewOrchestrator {
     private workspaceRoot: string
   ) {
     this.stateManager = new StateManager(config, llmClient)
+    this.injectionDetector = createPromptInjectionDetector(
+      config.opencode.apiKey,
+      config.security.injectionVerificationModel,
+      config.security.injectionDetectionEnabled
+    )
   }
 
   async executeReview(): Promise<ReviewOutput> {
@@ -203,9 +213,22 @@ export class ReviewOrchestrator {
           continue
         }
 
+        let sanitizedReplyBody: string
+        try {
+          sanitizedReplyBody = await this.sanitizeExternalInput(
+            latestReply.body,
+            `dispute reply from ${latestReply.author}`
+          )
+        } catch (error) {
+          logger.error(
+            `Skipping thread ${thread.id} due to blocked content: ${error instanceof Error ? error.message : String(error)}`
+          )
+          continue
+        }
+
         const classification = await this.stateManager.classifyDeveloperReply(
           thread.assessment.finding,
-          latestReply.body
+          sanitizedReplyBody
         )
 
         logger.info(
@@ -221,7 +244,7 @@ export class ReviewOrchestrator {
           prompt = REVIEW_PROMPTS.CLARIFY_REVIEW_FINDING(
             thread.assessment.finding,
             thread.assessment.assessment,
-            latestReply.body,
+            sanitizedReplyBody,
             thread.file,
             thread.line
           )
@@ -233,7 +256,7 @@ export class ReviewOrchestrator {
             thread.score,
             thread.file,
             thread.line,
-            latestReply.body,
+            sanitizedReplyBody,
             classification,
             this.config.dispute.enableHumanEscalation
           )
@@ -254,6 +277,11 @@ export class ReviewOrchestrator {
     logger.info(`Processing reply from ${replyAuthor} on thread ${threadId}`)
     logger.info(`File: ${file}:${line || 'N/A'}`)
 
+    const sanitizedReplyBody = await this.sanitizeExternalInput(
+      replyBody,
+      `dispute reply from ${replyAuthor}`
+    )
+
     const state = await this.stateManager.getOrCreateState()
     const thread = state.threads.find((t) => t.id === threadId)
 
@@ -271,7 +299,7 @@ export class ReviewOrchestrator {
 
     const classification = await this.stateManager.classifyDeveloperReply(
       thread.assessment.finding,
-      replyBody
+      sanitizedReplyBody
     )
 
     logger.info(
@@ -287,7 +315,7 @@ export class ReviewOrchestrator {
       prompt = REVIEW_PROMPTS.CLARIFY_REVIEW_FINDING(
         thread.assessment.finding,
         thread.assessment.assessment,
-        replyBody,
+        sanitizedReplyBody,
         thread.file,
         thread.line
       )
@@ -299,7 +327,7 @@ export class ReviewOrchestrator {
         thread.score,
         thread.file,
         thread.line,
-        replyBody,
+        sanitizedReplyBody,
         classification,
         this.config.dispute.enableHumanEscalation
       )
@@ -542,6 +570,30 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
     return new Promise((resolve) => setTimeout(resolve, ms))
   }
 
+  private async sanitizeExternalInput(
+    input: string,
+    context: string
+  ): Promise<string> {
+    const result = await this.injectionDetector.detectAndSanitize(input)
+
+    if (result.isConfirmedInjection) {
+      logger.error(
+        `Blocked prompt injection in ${context}. Threats: ${result.detectedThreats.join(', ')}`
+      )
+      throw new OrchestratorError(
+        `Content blocked: potential prompt injection detected in ${context}`
+      )
+    }
+
+    if (result.isSuspicious) {
+      logger.warning(
+        `Suspicious content in ${context} passed after LLM verification. Threats checked: ${result.detectedThreats.join(', ')}`
+      )
+    }
+
+    return result.sanitizedInput
+  }
+
   async updateThreadStatus(
     threadId: string,
     status: 'PENDING' | 'RESOLVED' | 'DISPUTED' | 'ESCALATED'
@@ -606,8 +658,13 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
         throw new OrchestratorError('No question context provided')
       }
 
+      const sanitizedQuestion = await this.sanitizeExternalInput(
+        questionContext.question,
+        `question from ${questionContext.author}`
+      )
+
       logger.info(
-        `Question from ${questionContext.author}: "${questionContext.question}"`
+        `Question from ${questionContext.author}: "${sanitizedQuestion}"`
       )
 
       if (questionContext.fileContext) {
@@ -627,7 +684,7 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
       )
 
       const prompt = REVIEW_PROMPTS.ANSWER_QUESTION(
-        questionContext.question,
+        sanitizedQuestion,
         questionContext.author,
         questionContext.fileContext,
         prContext.files.length > 0 ? prContext : undefined

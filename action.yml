@@ -65,6 +65,18 @@ inputs:
       'Enable verbose debug logging of LLM activity, events, and responses'
     required: false
     default: 'false'
+  injection_detection_enabled:
+    description:
+      'Enable prompt injection detection for external inputs (developer
+      comments, questions)'
+    required: false
+    default: 'true'
+  injection_verification_model:
+    description:
+      'OpenRouter model to use for LLM-based prompt injection verification (used
+      as secondary check after pattern detection)'
+    required: false
+    default: 'openai/gpt-4o-mini'
 
 # Define your outputs here.
 outputs:

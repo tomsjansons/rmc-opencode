@@ -29,6 +29,10 @@ export type ReviewConfig = {
     enableWeb: boolean
     debugLogging: boolean
   }
+  security: {
+    injectionDetectionEnabled: boolean
+    injectionVerificationModel: string
+  }
   scoring: {
     problemThreshold: number
     blockingThreshold: number

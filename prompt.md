@@ -16,6 +16,8 @@ We will work on tasks within the broader poject.
 
 # Task
 
-please review all the code in the repo and evaluate if the original requirements
-from the ./project-description.md have been implemented. please create a new
-document ./project-todos.md with any missed features, bugs, or contradictions
+please review all the code in the repo and evaluate if there is any risk of prompt injection.
+pay close attention to how posted comments (from the review agent itself or by developers) are 
+read and fed back into the agent.
+
+also please review if there is any risk of secret exfiltration of any kind.

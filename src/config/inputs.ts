@@ -70,6 +70,14 @@ export function parseInputs(): ReviewConfig {
     ? humanReviewersInput.split(',').map((r) => r.trim())
     : []
 
+  const injectionDetectionEnabled =
+    core.getInput('injection_detection_enabled', { required: false }) !==
+    'false'
+
+  const injectionVerificationModel =
+    core.getInput('injection_verification_model', { required: false }) ||
+    'openai/gpt-4o-mini'
+
   const context = github.context
 
   const { mode, prNumber, questionContext, disputeContext } =
@@ -110,6 +118,10 @@ export function parseInputs(): ReviewConfig {
     dispute: {
       enableHumanEscalation,
       humanReviewers
+    },
+    security: {
+      injectionDetectionEnabled,
+      injectionVerificationModel
     },
     execution: {
       mode,

@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import {
@@ -40,6 +39,7 @@ type OpenCodeConfig = {
   permission: {
     edit: 'deny'
     bash: 'deny'
+    external_directory: 'deny'
   }
 }
 
@@ -192,8 +192,17 @@ export class OpenCodeServer {
   }
 
   private createConfigFile(): string {
-    const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd()
-    const configPath = join(workspaceDir, 'opencode.json')
+    const secureConfigDir = '/tmp/opencode-secure-config'
+
+    try {
+      mkdirSync(secureConfigDir, { recursive: true, mode: 0o700 })
+    } catch (error) {
+      throw new OpenCodeError(
+        `Failed to create secure config directory: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+
+    const configPath = join(secureConfigDir, 'opencode.json')
     const model = this.config.opencode.model
 
     const openrouterModel = `openrouter/${model}`
@@ -217,12 +226,16 @@ export class OpenCodeServer {
       },
       permission: {
         edit: 'deny',
-        bash: 'deny'
+        bash: 'deny',
+        external_directory: 'deny'
       }
     }
 
     try {
-      writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8')
+      writeFileSync(configPath, JSON.stringify(config, null, 2), {
+        encoding: 'utf8',
+        mode: 0o600
+      })
       logger.info(`Created OpenCode config file: ${configPath}`)
       logger.info(`Config model: ${openrouterModel}`)
       logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`)
@@ -232,23 +245,13 @@ export class OpenCodeServer {
       )
     }
 
-    this.createAuthFile()
+    this.createAuthFile(secureConfigDir)
 
     return configPath
   }
 
-  private createAuthFile(): void {
-    const dataDir = join(homedir(), '.local', 'share', 'opencode')
-
-    try {
-      mkdirSync(dataDir, { recursive: true })
-    } catch (error) {
-      throw new OpenCodeError(
-        `Failed to create auth directory: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
-
-    const authPath = join(dataDir, 'auth.json')
+  private createAuthFile(secureConfigDir: string): void {
+    const authPath = join(secureConfigDir, 'auth.json')
     this.authFilePath = authPath
 
     const auth: OpenCodeAuth = {
