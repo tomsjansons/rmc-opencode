@@ -376,13 +376,16 @@ ${newCommits}
 2. For each fixed issue, call \`github_resolve_thread(thread_id, reason)\` with a clear explanation of how it was fixed
 3. For issues that remain unaddressed, leave them as-is (do NOT add follow-up comments)
 
-**IMPORTANT:**
-- This pass is ONLY for verifying existing issues - do NOT look for new issues
+**IMPORTANT - This is NOT a review pass:**
+- This is fix verification ONLY - do NOT look for new issues
 - Do NOT post any new review comments using \`github_post_review_comment\`
+- Do NOT call \`submit_pass_results\` - this is not a review pass
 - Only use \`github_resolve_thread\` to mark fixed issues as resolved
 - New issue discovery will happen in the subsequent review passes
 
-Use OpenCode tools to verify cross-file fixes (e.g., issue in file_A.ts fixed by change in file_B.ts).`,
+Use OpenCode tools to verify cross-file fixes (e.g., issue in file_A.ts fixed by change in file_B.ts).
+
+When you have finished verifying all issues, simply stop. Do not call any pass completion tools.`,
 
   DISPUTE_EVALUATION: (
     threadId: string,

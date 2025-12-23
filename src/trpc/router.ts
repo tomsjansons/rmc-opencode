@@ -249,6 +249,18 @@ export const appRouter = router({
           `tRPC: review.submitPassResults called for pass ${input.passNumber}`
         )
 
+        if (!ctx.orchestrator.isInMultiPassReview()) {
+          logger.warning(
+            `submit_pass_results called outside of multi-pass review phase - rejecting`
+          )
+          return {
+            success: false,
+            error:
+              'submit_pass_results can only be called during the multi-pass review phase. Do not call this tool during fix verification or dispute resolution.',
+            nextPass: null
+          }
+        }
+
         const alreadyCompleted = ctx.orchestrator.isPassCompleted(
           input.passNumber
         )

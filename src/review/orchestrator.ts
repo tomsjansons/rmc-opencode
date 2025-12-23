@@ -20,11 +20,18 @@ import type {
 
 type PassNumber = 1 | 2 | 3 | 4
 
+type ReviewPhase =
+  | 'idle'
+  | 'fix-verification'
+  | 'dispute-resolution'
+  | 'multi-pass-review'
+
 export class ReviewOrchestrator {
   private stateManager: StateManager
   private passResults: PassResult[] = []
   private reviewState: ReviewState | null = null
   private currentSessionId: string | null = null
+  private currentPhase: ReviewPhase = 'idle'
 
   constructor(
     private opencode: OpenCodeClient,
@@ -116,6 +123,9 @@ export class ReviewOrchestrator {
   }
 
   private async executeMultiPassReview(): Promise<void> {
+    this.currentPhase = 'multi-pass-review'
+    this.passResults = []
+
     const files = await this.github.getPRFiles()
     const securitySensitivity = await this.detectSecuritySensitivity()
 
@@ -129,6 +139,8 @@ export class ReviewOrchestrator {
     await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity))
 
     logger.info('All 3 passes completed in single session')
+
+    this.currentPhase = 'idle'
   }
 
   private async executeFixVerification(): Promise<void> {
@@ -136,6 +148,8 @@ export class ReviewOrchestrator {
       if (!this.reviewState) {
         throw new OrchestratorError('Review state not loaded')
       }
+
+      this.currentPhase = 'fix-verification'
 
       const previousIssues = this.formatPreviousIssues()
       const newCommits = await this.getNewCommitsSummary()
@@ -147,6 +161,8 @@ export class ReviewOrchestrator {
       )
 
       await this.sendPromptToOpenCode(prompt)
+
+      this.currentPhase = 'idle'
     })
   }
 
@@ -154,8 +170,11 @@ export class ReviewOrchestrator {
     disputeContext?: DisputeContext
   ): Promise<void> {
     await logger.group('Dispute Resolution', async () => {
+      this.currentPhase = 'dispute-resolution'
+
       if (disputeContext) {
         await this.handleSingleDispute(disputeContext)
+        this.currentPhase = 'idle'
         return
       }
 
@@ -220,6 +239,8 @@ export class ReviewOrchestrator {
 
         await this.sendPromptToOpenCode(prompt)
       }
+
+      this.currentPhase = 'idle'
     })
   }
 
@@ -357,6 +378,10 @@ export class ReviewOrchestrator {
 
   isPassCompleted(passNumber: number): boolean {
     return this.passResults.some((p) => p.passNumber === passNumber)
+  }
+
+  isInMultiPassReview(): boolean {
+    return this.currentPhase === 'multi-pass-review'
   }
 
   recordPassCompletion(result: PassResult): void {
