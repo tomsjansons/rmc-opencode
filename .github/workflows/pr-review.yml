@@ -7,11 +7,14 @@ on:
   issue_comment:
     types: [created]
 
+  pull_request_review_comment:
+    types: [created]
+
 concurrency:
   group:
     pr-review-${{ github.event.pull_request.number || github.event.issue.number
     }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   review:
@@ -20,7 +23,9 @@ jobs:
       (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
       (github.event_name == 'issue_comment' && 
        github.event.issue.pull_request && 
-       contains(github.event.comment.body, '@review-my-code-bot'))
+       contains(github.event.comment.body, '@review-my-code-bot')) ||
+      (github.event_name == 'pull_request_review_comment' &&
+       github.event.comment.in_reply_to_id != '')
 
     runs-on: ubuntu-latest
 
@@ -36,9 +41,11 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || '' }}
 
       - name: Checkout PR head for comment events
-        if: github.event_name == 'issue_comment'
+        if:
+          github.event_name == 'issue_comment' || github.event_name ==
+          'pull_request_review_comment'
         run: |
-          gh pr checkout ${{ github.event.issue.number }}
+          gh pr checkout ${{ github.event.issue.number || github.event.pull_request.number }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -47,7 +54,8 @@ jobs:
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          model: 'anthropic/claude-sonnet-4-20250514'
+          model: 'openai/gpt-5.1-codex-mini'
+          injection_verification_model: 'openai/gpt-oss-20b'
           problem_score_threshold: 5
           review_timeout_minutes: 30
           max_review_retries: 1

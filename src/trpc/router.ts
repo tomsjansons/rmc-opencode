@@ -2,8 +2,11 @@ import { initTRPC } from '@trpc/server'
 import superjson from 'superjson'
 
 import type { GitHubAPI } from '../github/api.js'
+import type { LLMClient } from '../opencode/llm-client.js'
 import type { ReviewOrchestrator } from '../review/orchestrator.js'
 import { logger } from '../utils/logger.js'
+import { auditToolCall } from '../utils/security.js'
+import { validateComment } from './comment-validator.js'
 import {
   escalateDisputeSchema,
   postReviewCommentSchema,
@@ -12,9 +15,10 @@ import {
   submitPassResultsSchema
 } from './schemas.js'
 
-export interface TRPCContext {
+export type TRPCContext = {
   orchestrator: ReviewOrchestrator
   github: GitHubAPI
+  llmClient: LLMClient
 }
 
 const t = initTRPC.context<TRPCContext>().create({
@@ -40,6 +44,16 @@ export const appRouter = router({
     postReviewComment: publicProcedure
       .input(postReviewCommentSchema)
       .mutation(async ({ ctx, input }) => {
+        auditToolCall({
+          toolName: 'github_post_review_comment',
+          parameters: {
+            file: input.file,
+            line: input.line,
+            score: input.assessment.score
+          },
+          sessionId: 'trpc-session'
+        })
+
         logger.debug(
           `tRPC: github.postReviewComment called for ${input.file}:${input.line} (score: ${input.assessment.score})`
         )
@@ -55,7 +69,42 @@ export const appRouter = router({
           }
         }
 
-        const commentBody = `${input.body}\n\n---\n\`\`\`json\n${JSON.stringify(input.assessment, null, 2)}\n\`\`\``
+        const existingThread = ctx.orchestrator.findDuplicateThread(
+          input.file,
+          input.line,
+          input.assessment.finding
+        )
+
+        if (existingThread) {
+          logger.info(
+            `Comment deduplicated: existing thread ${existingThread.id} for ${input.file}:${input.line} with similar finding`
+          )
+          return {
+            filtered: true,
+            reason: `Duplicate: existing unresolved thread ${existingThread.id} with similar finding`
+          }
+        }
+
+        const validation = await validateComment(input.body, ctx.llmClient)
+
+        if (!validation.isValid) {
+          logger.warning(
+            `Comment rejected due to thinking content: ${validation.patterns?.join(', ')}`
+          )
+          return {
+            filtered: true,
+            reason: validation.reason,
+            requiresRephrasing: true
+          }
+        }
+
+        if (validation.suspectedThinking && !validation.confirmedThinking) {
+          logger.debug(
+            `Comment passed validation despite suspected patterns: ${validation.patterns?.join(', ')}`
+          )
+        }
+
+        const commentBody = `${input.body}\n\n---\n\`\`\`rmcoc\n${JSON.stringify(input.assessment, null, 2)}\n\`\`\``
 
         const commentId = await ctx.github.postReviewComment({
           path: input.file,
@@ -88,7 +137,39 @@ export const appRouter = router({
     replyToThread: publicProcedure
       .input(replyToThreadSchema)
       .mutation(async ({ ctx, input }) => {
+        auditToolCall({
+          toolName: 'github_reply_to_thread',
+          parameters: {
+            threadId: input.threadId,
+            isConcession: input.isConcession
+          },
+          sessionId: 'trpc-session'
+        })
+
         logger.debug(`tRPC: github.replyToThread called for ${input.threadId}`)
+
+        const state = ctx.orchestrator.getState()
+        const thread = state?.threads.find((t) => t.id === input.threadId)
+
+        if (thread?.status === 'RESOLVED') {
+          logger.info(
+            `Thread ${input.threadId} is already resolved, skipping reply`
+          )
+          return { success: true, skipped: true }
+        }
+
+        const validation = await validateComment(input.body, ctx.llmClient)
+
+        if (!validation.isValid) {
+          logger.warning(
+            `Reply rejected due to thinking content: ${validation.patterns?.join(', ')}`
+          )
+          return {
+            success: false,
+            reason: validation.reason,
+            requiresRephrasing: true
+          }
+        }
 
         await ctx.github.replyToComment(input.threadId, input.body)
 
@@ -102,25 +183,55 @@ export const appRouter = router({
           logger.info(`Thread ${input.threadId} marked as DISPUTED`)
         }
 
-        return { success: true }
+        return { success: true, skipped: false }
       }),
 
     resolveThread: publicProcedure
       .input(resolveThreadSchema)
       .mutation(async ({ ctx, input }) => {
+        auditToolCall({
+          toolName: 'github_resolve_thread',
+          parameters: {
+            threadId: input.threadId,
+            reason: input.reason
+          },
+          sessionId: 'trpc-session'
+        })
+
         logger.debug(`tRPC: github.resolveThread called for ${input.threadId}`)
+
+        const state = ctx.orchestrator.getState()
+        const thread = state?.threads.find((t) => t.id === input.threadId)
+
+        if (thread?.status === 'RESOLVED') {
+          logger.info(
+            `Thread ${input.threadId} is already resolved, skipping duplicate resolution`
+          )
+          return {
+            success: true,
+            alreadyResolved: true
+          }
+        }
 
         await ctx.github.resolveThread(input.threadId, input.reason)
         await ctx.orchestrator.updateThreadStatus(input.threadId, 'RESOLVED')
 
         logger.info(`Thread ${input.threadId} resolved: ${input.reason}`)
 
-        return { success: true }
+        return { success: true, alreadyResolved: false }
       }),
 
     escalateDispute: publicProcedure
       .input(escalateDisputeSchema)
       .mutation(async ({ ctx, input }) => {
+        auditToolCall({
+          toolName: 'github_escalate_dispute',
+          parameters: {
+            threadId: input.threadId
+          },
+          sessionId: 'trpc-session'
+        })
+
         logger.debug(
           `tRPC: github.escalateDispute called for ${input.threadId}`
         )
@@ -168,9 +279,36 @@ export const appRouter = router({
           `tRPC: review.submitPassResults called for pass ${input.passNumber}`
         )
 
+        if (!ctx.orchestrator.isInMultiPassReview()) {
+          logger.warning(
+            `submit_pass_results called outside of multi-pass review phase - rejecting`
+          )
+          return {
+            success: false,
+            error:
+              'submit_pass_results can only be called during the multi-pass review phase. Do not call this tool during fix verification or dispute resolution.',
+            nextPass: null
+          }
+        }
+
+        const alreadyCompleted = ctx.orchestrator.isPassCompleted(
+          input.passNumber
+        )
+
+        if (alreadyCompleted) {
+          logger.warning(
+            `Pass ${input.passNumber} already completed - rejecting duplicate submission`
+          )
+          return {
+            success: false,
+            error: `Pass ${input.passNumber} has already been completed. Do not call submit_pass_results again for this pass.`,
+            nextPass: null
+          }
+        }
+
         ctx.orchestrator.recordPassCompletion({
           passNumber: input.passNumber,
-          summary: input.summary,
+          completed: true,
           hasBlockingIssues: input.hasBlockingIssues
         })
 
@@ -182,6 +320,7 @@ export const appRouter = router({
 
         return {
           success: true,
+          error: null,
           nextPass
         }
       })

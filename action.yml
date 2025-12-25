@@ -42,7 +42,10 @@ inputs:
     required: false
     default: 'false'
   github_token:
-    description: 'GitHub token for API access'
+    description:
+      'GitHub token for API access. The default GITHUB_TOKEN works for most
+      features. To auto-resolve review threads (mark as resolved in GitHub UI),
+      use a PAT with repo scope.'
     required: true
     default: ${{ github.token }}
   enable_human_escalation:
@@ -62,6 +65,18 @@ inputs:
       'Enable verbose debug logging of LLM activity, events, and responses'
     required: false
     default: 'false'
+  injection_detection_enabled:
+    description:
+      'Enable prompt injection detection for external inputs (developer
+      comments, questions)'
+    required: false
+    default: 'true'
+  injection_verification_model:
+    description:
+      'OpenRouter model to use for LLM-based prompt injection verification (used
+      as secondary check after pattern detection)'
+    required: false
+    default: 'openai/gpt-4o-mini'
 
 # Define your outputs here.
 outputs:
@@ -74,5 +89,5 @@ outputs:
     description: 'Number of blocking issues (score >= blocking_score_threshold)'
 
 runs:
-  using: node24
+  using: node20
   main: dist/index.js

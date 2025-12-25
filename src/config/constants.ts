@@ -5,3 +5,6 @@ export const OPENCODE_SERVER_URL = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SE
 export const TRPC_SERVER_PORT = 38291
 export const TRPC_SERVER_HOST = 'localhost'
 export const TRPC_SERVER_URL = `http://${TRPC_SERVER_HOST}:${TRPC_SERVER_PORT}`
+
+export const OPENROUTER_API_URL =
+  'https://openrouter.ai/api/v1/chat/completions'

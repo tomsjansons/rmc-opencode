@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
@@ -24,9 +23,12 @@ type ServerStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
 
 type OpenCodeConfig = {
   $schema: string
+  model: string
+  enabled_providers: string[]
+  disabled_providers: string[]
   provider: {
     openrouter: {
-      models: Record<string, { default?: boolean }>
+      models: Record<string, object>
     }
   }
   tools: {
@@ -37,6 +39,7 @@ type OpenCodeConfig = {
   permission: {
     edit: 'deny'
     bash: 'deny'
+    external_directory: 'deny'
   }
 }
 
@@ -164,12 +167,34 @@ export class OpenCodeServer {
     logger.debug(`Running: ${command} ${serveArgs.join(' ')}`)
     logger.debug(`Using config file: ${this.configFilePath}`)
 
+    const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd()
+
+    const env: Record<string, string> = {
+      OPENCODE_CONFIG: this.configFilePath || '',
+      OPENROUTER_API_KEY: this.config.opencode.apiKey,
+      PATH: process.env.PATH || '',
+      HOME: process.env.HOME || '',
+      TMPDIR: process.env.TMPDIR || process.env.TEMP || '/tmp',
+      NODE_ENV: process.env.NODE_ENV || 'production'
+    }
+
+    if (this.config.opencode.debugLogging) {
+      env.DEBUG = process.env.DEBUG || '*'
+      env.OPENCODE_DEBUG = 'true'
+    }
+
+    logger.info(`OpenCode environment: OPENCODE_CONFIG=${env.OPENCODE_CONFIG}`)
+    logger.debug('OPENROUTER_API_KEY passed via environment variable')
+    logger.debug(
+      `Minimal environment: ${Object.keys(env)
+        .filter((k) => k !== 'OPENROUTER_API_KEY')
+        .join(', ')}`
+    )
+
     this.serverProcess = spawn(command, serveArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        OPENCODE_CONFIG: this.configFilePath
-      },
+      cwd: workspaceDir,
+      env,
       detached: false
     })
 
@@ -177,29 +202,29 @@ export class OpenCodeServer {
   }
 
   private createConfigFile(): string {
-    const tempDir = tmpdir()
-    const configDir = join(tempDir, 'opencode-pr-reviewer')
+    const secureConfigDir = '/tmp/opencode-secure-config'
 
     try {
-      mkdirSync(configDir, { recursive: true })
+      mkdirSync(secureConfigDir, { recursive: true, mode: 0o700 })
     } catch (error) {
       throw new OpenCodeError(
-        `Failed to create config directory: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to create secure config directory: ${error instanceof Error ? error.message : String(error)}`
       )
     }
 
-    const configPath = join(configDir, 'opencode.json')
+    const configPath = join(secureConfigDir, 'opencode.json')
     const model = this.config.opencode.model
+
+    const openrouterModel = `openrouter/${model}`
 
     const config: OpenCodeConfig = {
       $schema: 'https://opencode.ai/config.json',
+      model: openrouterModel,
+      enabled_providers: ['openrouter'],
+      disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
       provider: {
         openrouter: {
-          models: {
-            [model]: {
-              default: true
-            }
-          }
+          models: {}
         }
       },
       tools: {
@@ -209,37 +234,32 @@ export class OpenCodeServer {
       },
       permission: {
         edit: 'deny',
-        bash: 'deny'
+        bash: 'deny',
+        external_directory: 'deny'
       }
     }
 
     try {
-      writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8')
-      logger.debug(`Created OpenCode config file: ${configPath}`)
-      logger.debug(`Config contents: ${JSON.stringify(config, null, 2)}`)
+      writeFileSync(configPath, JSON.stringify(config, null, 2), {
+        encoding: 'utf8',
+        mode: 0o600
+      })
+      logger.info(`Created OpenCode config file: ${configPath}`)
+      logger.info(`Config model: ${openrouterModel}`)
+      logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`)
     } catch (error) {
       throw new OpenCodeError(
         `Failed to write config file: ${error instanceof Error ? error.message : String(error)}`
       )
     }
 
-    this.createAuthFile()
+    this.createAuthFile(secureConfigDir)
 
     return configPath
   }
 
-  private createAuthFile(): void {
-    const dataDir = join(homedir(), '.local', 'share', 'opencode')
-
-    try {
-      mkdirSync(dataDir, { recursive: true })
-    } catch (error) {
-      throw new OpenCodeError(
-        `Failed to create auth directory: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
-
-    const authPath = join(dataDir, 'auth.json')
+  private createAuthFile(secureConfigDir: string): void {
+    const authPath = join(secureConfigDir, 'auth.json')
     this.authFilePath = authPath
 
     const auth: OpenCodeAuth = {
@@ -253,6 +273,9 @@ export class OpenCodeServer {
       })
       chmodSync(authPath, 0o600)
       logger.debug(`Created OpenCode auth file: ${authPath}`)
+      logger.debug(
+        'Note: Auth is also passed via OPENROUTER_API_KEY env var as backup'
+      )
     } catch (error) {
       throw new OpenCodeError(
         `Failed to write auth file: ${error instanceof Error ? error.message : String(error)}`

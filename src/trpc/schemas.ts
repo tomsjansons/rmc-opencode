@@ -28,8 +28,7 @@ export const resolveThreadSchema = z.object({
 })
 
 export const submitPassResultsSchema = z.object({
-  passNumber: z.number().min(1).max(4).describe('Pass number (1-4)'),
-  summary: z.string().describe('Summary of what was reviewed'),
+  passNumber: z.number().min(1).max(3).describe('Pass number (1-3)'),
   hasBlockingIssues: z.boolean().describe('Whether blocking issues were found')
 })
 

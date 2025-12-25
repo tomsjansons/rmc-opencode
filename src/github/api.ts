@@ -155,7 +155,7 @@ export class GitHubAPI {
         repo: this.repo,
         pull_number: this.prNumber,
         comment_id: Number(threadId),
-        body: `✅ **Issue Resolved**\n\n${reason}`
+        body: `✅ **Issue Resolved**\n\n${reason}\n\n\`\`\`rmcoc\n{"status": "RESOLVED"}\n\`\`\``
       })
 
       await this.resolveReviewThread(threadId)
@@ -192,9 +192,19 @@ export class GitHubAPI {
 
       logger.debug(`GraphQL: Resolved review thread ${threadId}`)
     } catch (error) {
-      logger.warning(
-        `Failed to resolve review thread via GraphQL: ${error instanceof Error ? error.message : String(error)}`
-      )
+      const errorMessage =
+        error instanceof Error ? error.message : String(error)
+
+      if (errorMessage.includes('Resource not accessible by integration')) {
+        logger.debug(
+          `Cannot auto-resolve thread via GraphQL - requires a PAT with elevated permissions. ` +
+            `The thread has been marked as resolved via comment.`
+        )
+      } else {
+        logger.warning(
+          `Failed to resolve review thread via GraphQL: ${errorMessage}`
+        )
+      }
     }
   }
 
@@ -289,7 +299,11 @@ ${agentPosition}
 **Developer's Position:**
 ${developerPosition}
 
-${reviewerTags} - Please review this dispute and make a final decision.`
+${reviewerTags} - Please review this dispute and make a final decision.
+
+\`\`\`rmcoc
+{"status": "ESCALATED"}
+\`\`\``
       })
 
       logger.info(`Escalated thread ${threadId} to ${reviewers.join(', ')}`)

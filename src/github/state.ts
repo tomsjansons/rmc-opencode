@@ -1,10 +1,12 @@
 import * as core from '@actions/core'
 import { Octokit } from '@octokit/rest'
 
-import type { ReviewConfig } from '../review/types.js'
+import type { LLMClient } from '../opencode/llm-client.js'
+import type { PassResult, ReviewConfig } from '../review/types.js'
+import { sanitizeDelimiters } from '../utils/security.js'
 
 const STATE_SCHEMA_VERSION = 1
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
+const BOT_USERS = ['opencode-reviewer[bot]', 'github-actions[bot]']
 
 export type ReviewThread = {
   id: string
@@ -30,13 +32,6 @@ export type ReviewThread = {
   escalated_at?: string
 }
 
-export type PassResult = {
-  number: number
-  summary: string
-  completed: boolean
-  has_blocking_issues: boolean
-}
-
 export type ReviewState = {
   version: number
   prNumber: number
@@ -54,7 +49,10 @@ export class StateManager {
   private sentimentCache: Map<string, boolean>
   private currentState: ReviewState | null = null
 
-  constructor(private config: ReviewConfig) {
+  constructor(
+    private config: ReviewConfig,
+    private llmClient: LLMClient
+  ) {
     this.octokit = new Octokit({
       auth: config.github.token
     })
@@ -102,6 +100,11 @@ export class StateManager {
 
       for (const comment of reviewComments.data) {
         if (comment.in_reply_to_id) {
+          continue
+        }
+
+        const commentAuthor = comment.user?.login
+        if (!commentAuthor || !BOT_USERS.includes(commentAuthor)) {
           continue
         }
 
@@ -181,6 +184,11 @@ export class StateManager {
         continue
       }
 
+      const statusFromBlock = this.extractStatusFromRmcocBlock(reply.body)
+      if (statusFromBlock) {
+        return statusFromBlock
+      }
+
       if (reply.body.includes('✅ **Issue Resolved**')) {
         return 'RESOLVED'
       }
@@ -193,12 +201,36 @@ export class StateManager {
     return 'PENDING'
   }
 
+  private extractStatusFromRmcocBlock(
+    body: string
+  ): 'RESOLVED' | 'ESCALATED' | null {
+    const match = body.match(/```rmcoc\s*(\{[\s\S]*?\})\s*```/)
+    if (!match?.[1]) {
+      return null
+    }
+
+    try {
+      const parsed = JSON.parse(match[1])
+      if (parsed.status === 'RESOLVED') {
+        return 'RESOLVED'
+      }
+      if (parsed.status === 'ESCALATED') {
+        return 'ESCALATED'
+      }
+    } catch {
+      return null
+    }
+
+    return null
+  }
+
   private extractAssessmentFromComment(body: string): {
     finding: string
     assessment: string
     score: number
   } | null {
     const patterns = [
+      /```rmcoc\s*(\{[\s\S]*?\})\s*```/,
       /```json\s*(\{[\s\S]*?\})\s*```/,
       /(\{\s*"finding"[\s\S]*?"score"\s*:\s*\d+\s*\})/
     ]
@@ -235,6 +267,10 @@ export class StateManager {
         // Replace standalone backticks with single quotes
         .replace(/`/g, "'")
     )
+  }
+
+  private sanitizePromptInput(input: string): string {
+    return sanitizeDelimiters(input)
   }
 
   async detectConcession(body: string): Promise<boolean> {
@@ -284,7 +320,12 @@ export class StateManager {
     return concessionPhrases.some((phrase) => lowerBody.includes(phrase))
   }
 
+  private async callLLM(prompt: string): Promise<string | null> {
+    return this.llmClient.complete(prompt)
+  }
+
   private async analyzeCommentSentiment(commentBody: string): Promise<boolean> {
+    const sanitizedBody = this.sanitizePromptInput(commentBody)
     const prompt = `You are analyzing a code review comment to determine if the developer is conceding to a reviewer's suggestion.
 
 A concession means the developer:
@@ -301,51 +342,18 @@ A concession does NOT include:
 
 Comment to analyze:
 """
-${commentBody}
+${sanitizedBody}
 """
 
 Respond with ONLY "true" if this is a concession, or "false" if it is not.`
 
-    const requestBody = {
-      model: this.config.opencode.model,
-      messages: [
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      temperature: 0.1,
-      max_tokens: 10
-    }
+    const content = await this.callLLM(prompt)
 
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.config.opencode.apiKey}`,
-        'HTTP-Referer': 'https://github.com/opencode-pr-reviewer',
-        'X-Title': 'OpenCode PR Reviewer'
-      },
-      body: JSON.stringify(requestBody)
-    })
-
-    if (!response.ok) {
-      throw new Error(
-        `OpenRouter API request failed: ${response.status} ${response.statusText}`
-      )
-    }
-
-    const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>
-    }
-
-    const content = data.choices?.[0]?.message?.content?.trim().toLowerCase()
-
-    if (content === 'true') {
+    if (/^true/i.test(content || '')) {
       return true
     }
 
-    if (content === 'false') {
+    if (/^false/i.test(content || '')) {
       return false
     }
 
@@ -398,7 +406,7 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
     const state = await this.getOrCreateState()
 
     const existingIndex = state.passes.findIndex(
-      (p) => p.number === passResult.number
+      (p) => p.passNumber === passResult.passNumber
     )
     if (existingIndex >= 0) {
       state.passes[existingIndex] = passResult
@@ -452,13 +460,15 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
     originalFinding: string,
     replyBody: string
   ): Promise<'acknowledgment' | 'dispute' | 'question' | 'out_of_scope'> {
+    const sanitizedFinding = this.sanitizePromptInput(originalFinding)
+    const sanitizedReply = this.sanitizePromptInput(replyBody)
     const prompt = `You are analyzing a developer's response to a code review comment to classify their intent.
 
-Original finding: "${originalFinding}"
+Original finding: "${sanitizedFinding}"
 
 Developer's response:
 """
-${replyBody}
+${sanitizedReply}
 """
 
 Classify the response as ONE of the following:
@@ -469,56 +479,20 @@ Classify the response as ONE of the following:
 
 Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
 
-    const requestBody = {
-      model: this.config.opencode.model,
-      messages: [
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      temperature: 0.1,
-      max_tokens: 10
-    }
-
     try {
-      const response = await fetch(OPENROUTER_API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.config.opencode.apiKey}`,
-          'HTTP-Referer': 'https://github.com/opencode-pr-reviewer',
-          'X-Title': 'OpenCode PR Reviewer'
-        },
-        body: JSON.stringify(requestBody)
-      })
+      const content = (await this.callLLM(prompt)) || ''
 
-      if (!response.ok) {
-        throw new Error(
-          `OpenRouter API request failed: ${response.status} ${response.statusText}`
-        )
+      if (/^acknowledgment/i.test(content)) {
+        return 'acknowledgment'
       }
-
-      const data = (await response.json()) as {
-        choices?: Array<{ message?: { content?: string } }>
+      if (/^dispute/i.test(content)) {
+        return 'dispute'
       }
-
-      const content = data.choices?.[0]?.message?.content
-        ?.trim()
-        .toLowerCase() as
-        | 'acknowledgment'
-        | 'dispute'
-        | 'question'
-        | 'out_of_scope'
-        | undefined
-
-      if (
-        content === 'acknowledgment' ||
-        content === 'dispute' ||
-        content === 'question' ||
-        content === 'out_of_scope'
-      ) {
-        return content
+      if (/^question/i.test(content)) {
+        return 'question'
+      }
+      if (/^out_of_scope/i.test(content)) {
+        return 'out_of_scope'
       }
 
       core.debug(
@@ -594,7 +568,154 @@ Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
 
     return threadsWithReplies
   }
+
+  findDuplicateThread(
+    file: string,
+    line: number,
+    finding: string
+  ): ReviewThread | null {
+    if (!this.currentState) {
+      return null
+    }
+
+    return (
+      this.currentState.threads.find(
+        (t) =>
+          t.file === file &&
+          t.line === line &&
+          t.status !== 'RESOLVED' &&
+          this.isSimilarFinding(t.assessment.finding, finding)
+      ) || null
+    )
+  }
+
+  private isSimilarFinding(existing: string, incoming: string): boolean {
+    const normalizedExisting = this.normalizeForComparison(existing)
+    const normalizedIncoming = this.normalizeForComparison(incoming)
+
+    if (normalizedExisting === normalizedIncoming) {
+      return true
+    }
+
+    const existingWords = this.getSignificantWords(existing)
+    const incomingWords = this.getSignificantWords(incoming)
+
+    if (existingWords.size === 0 || incomingWords.size === 0) {
+      return false
+    }
+
+    const intersection = [...existingWords].filter((w) => incomingWords.has(w))
+    const smallerSet = Math.min(existingWords.size, incomingWords.size)
+
+    const overlapRatio = intersection.length / smallerSet
+
+    return overlapRatio >= 0.5
+  }
+
+  private normalizeForComparison(text: string): string {
+    return text
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  private getSignificantWords(text: string): Set<string> {
+    const words = this.normalizeForComparison(text).split(' ')
+    return new Set(words.filter((w) => w.length > 2 && !STOP_WORDS.has(w)))
+  }
 }
+
+const STOP_WORDS = new Set([
+  'a',
+  'an',
+  'the',
+  'is',
+  'are',
+  'was',
+  'were',
+  'be',
+  'been',
+  'being',
+  'have',
+  'has',
+  'had',
+  'do',
+  'does',
+  'did',
+  'will',
+  'would',
+  'could',
+  'should',
+  'may',
+  'might',
+  'must',
+  'shall',
+  'can',
+  'need',
+  'dare',
+  'ought',
+  'used',
+  'to',
+  'of',
+  'in',
+  'for',
+  'on',
+  'with',
+  'at',
+  'by',
+  'from',
+  'as',
+  'into',
+  'through',
+  'during',
+  'before',
+  'after',
+  'above',
+  'below',
+  'between',
+  'under',
+  'again',
+  'further',
+  'then',
+  'once',
+  'here',
+  'there',
+  'when',
+  'where',
+  'why',
+  'how',
+  'all',
+  'each',
+  'few',
+  'more',
+  'most',
+  'other',
+  'some',
+  'such',
+  'no',
+  'nor',
+  'not',
+  'only',
+  'own',
+  'same',
+  'so',
+  'than',
+  'too',
+  'very',
+  'just',
+  'and',
+  'but',
+  'if',
+  'or',
+  'because',
+  'until',
+  'while',
+  'this',
+  'that',
+  'these',
+  'those'
+])
 
 export class StateError extends Error {
   constructor(

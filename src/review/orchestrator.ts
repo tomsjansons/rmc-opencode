@@ -8,26 +8,50 @@ import {
   StateManager
 } from '../github/state.js'
 import type { OpenCodeClient } from '../opencode/client.js'
+import type { LLMClient } from '../opencode/llm-client.js'
 import { OrchestratorError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
+import {
+  type PromptInjectionDetector,
+  createPromptInjectionDetector
+} from '../utils/prompt-injection-detector.js'
 import { REVIEW_PROMPTS, buildSecuritySensitivity } from './prompts.js'
-import type { PassResult, ReviewConfig, ReviewOutput } from './types.js'
+import type {
+  DisputeContext,
+  PassResult,
+  ReviewConfig,
+  ReviewOutput
+} from './types.js'
 
 type PassNumber = 1 | 2 | 3 | 4
 
+type ReviewPhase =
+  | 'idle'
+  | 'fix-verification'
+  | 'dispute-resolution'
+  | 'multi-pass-review'
+
 export class ReviewOrchestrator {
   private stateManager: StateManager
+  private injectionDetector: PromptInjectionDetector
   private passResults: PassResult[] = []
   private reviewState: ReviewState | null = null
   private currentSessionId: string | null = null
+  private currentPhase: ReviewPhase = 'idle'
 
   constructor(
     private opencode: OpenCodeClient,
+    llmClient: LLMClient,
     private github: GitHubAPI,
     private config: ReviewConfig,
     private workspaceRoot: string
   ) {
-    this.stateManager = new StateManager(config)
+    this.stateManager = new StateManager(config, llmClient)
+    this.injectionDetector = createPromptInjectionDetector(
+      config.opencode.apiKey,
+      config.security.injectionVerificationModel,
+      config.security.injectionDetectionEnabled
+    )
   }
 
   async executeReview(): Promise<ReviewOutput> {
@@ -111,6 +135,9 @@ export class ReviewOrchestrator {
   }
 
   private async executeMultiPassReview(): Promise<void> {
+    this.currentPhase = 'multi-pass-review'
+    this.passResults = []
+
     const files = await this.github.getPRFiles()
     const securitySensitivity = await this.detectSecuritySensitivity()
 
@@ -124,6 +151,8 @@ export class ReviewOrchestrator {
     await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity))
 
     logger.info('All 3 passes completed in single session')
+
+    this.currentPhase = 'idle'
   }
 
   private async executeFixVerification(): Promise<void> {
@@ -131,6 +160,8 @@ export class ReviewOrchestrator {
       if (!this.reviewState) {
         throw new OrchestratorError('Review state not loaded')
       }
+
+      this.currentPhase = 'fix-verification'
 
       const previousIssues = this.formatPreviousIssues()
       const newCommits = await this.getNewCommitsSummary()
@@ -142,11 +173,23 @@ export class ReviewOrchestrator {
       )
 
       await this.sendPromptToOpenCode(prompt)
+
+      this.currentPhase = 'idle'
     })
   }
 
-  async executeDisputeResolution(): Promise<void> {
+  async executeDisputeResolution(
+    disputeContext?: DisputeContext
+  ): Promise<void> {
     await logger.group('Dispute Resolution', async () => {
+      this.currentPhase = 'dispute-resolution'
+
+      if (disputeContext) {
+        await this.handleSingleDispute(disputeContext)
+        this.currentPhase = 'idle'
+        return
+      }
+
       const threadsWithReplies =
         await this.stateManager.getThreadsWithDeveloperReplies()
 
@@ -170,9 +213,22 @@ export class ReviewOrchestrator {
           continue
         }
 
+        let sanitizedReplyBody: string
+        try {
+          sanitizedReplyBody = await this.sanitizeExternalInput(
+            latestReply.body,
+            `dispute reply from ${latestReply.author}`
+          )
+        } catch (error) {
+          logger.error(
+            `Skipping thread ${thread.id} due to blocked content: ${error instanceof Error ? error.message : String(error)}`
+          )
+          continue
+        }
+
         const classification = await this.stateManager.classifyDeveloperReply(
           thread.assessment.finding,
-          latestReply.body
+          sanitizedReplyBody
         )
 
         logger.info(
@@ -188,7 +244,7 @@ export class ReviewOrchestrator {
           prompt = REVIEW_PROMPTS.CLARIFY_REVIEW_FINDING(
             thread.assessment.finding,
             thread.assessment.assessment,
-            latestReply.body,
+            sanitizedReplyBody,
             thread.file,
             thread.line
           )
@@ -200,7 +256,7 @@ export class ReviewOrchestrator {
             thread.score,
             thread.file,
             thread.line,
-            latestReply.body,
+            sanitizedReplyBody,
             classification,
             this.config.dispute.enableHumanEscalation
           )
@@ -208,7 +264,76 @@ export class ReviewOrchestrator {
 
         await this.sendPromptToOpenCode(prompt)
       }
+
+      this.currentPhase = 'idle'
     })
+  }
+
+  private async handleSingleDispute(
+    disputeContext: DisputeContext
+  ): Promise<void> {
+    const { threadId, replyBody, replyAuthor, file, line } = disputeContext
+
+    logger.info(`Processing reply from ${replyAuthor} on thread ${threadId}`)
+    logger.info(`File: ${file}:${line || 'N/A'}`)
+
+    const sanitizedReplyBody = await this.sanitizeExternalInput(
+      replyBody,
+      `dispute reply from ${replyAuthor}`
+    )
+
+    const state = await this.stateManager.getOrCreateState()
+    const thread = state.threads.find((t) => t.id === threadId)
+
+    if (!thread) {
+      logger.warning(
+        `Thread ${threadId} not found in state. This may be a reply to a non-bot comment.`
+      )
+      return
+    }
+
+    if (thread.status === 'RESOLVED') {
+      logger.info(`Thread ${threadId} is already resolved, skipping.`)
+      return
+    }
+
+    const classification = await this.stateManager.classifyDeveloperReply(
+      thread.assessment.finding,
+      sanitizedReplyBody
+    )
+
+    logger.info(
+      `Classified reply as: ${classification} (thread ${threadId}, author: ${replyAuthor})`
+    )
+
+    let prompt: string
+
+    if (classification === 'question') {
+      logger.info(
+        'Developer asked for clarification - using Q&A mode for detailed explanation'
+      )
+      prompt = REVIEW_PROMPTS.CLARIFY_REVIEW_FINDING(
+        thread.assessment.finding,
+        thread.assessment.assessment,
+        sanitizedReplyBody,
+        thread.file,
+        thread.line
+      )
+    } else {
+      prompt = REVIEW_PROMPTS.DISPUTE_EVALUATION(
+        thread.id,
+        thread.assessment.finding,
+        thread.assessment.assessment,
+        thread.score,
+        thread.file,
+        thread.line,
+        sanitizedReplyBody,
+        classification,
+        this.config.dispute.enableHumanEscalation
+      )
+    }
+
+    await this.sendPromptToOpenCode(prompt)
   }
 
   private async executePass(
@@ -281,11 +406,18 @@ export class ReviewOrchestrator {
     }
   }
 
+  isPassCompleted(passNumber: number): boolean {
+    return this.passResults.some((p) => p.passNumber === passNumber)
+  }
+
+  isInMultiPassReview(): boolean {
+    return this.currentPhase === 'multi-pass-review'
+  }
+
   recordPassCompletion(result: PassResult): void {
     logger.info(
       `Pass ${result.passNumber} completed: ${result.hasBlockingIssues ? 'HAS BLOCKING ISSUES' : 'no blocking issues'}`
     )
-    logger.debug(`Pass ${result.passNumber} summary: ${result.summary}`)
 
     const existingIndex = this.passResults.findIndex(
       (p) => p.passNumber === result.passNumber
@@ -298,17 +430,18 @@ export class ReviewOrchestrator {
     }
 
     if (this.reviewState) {
-      this.stateManager
-        .recordPassCompletion({
-          number: result.passNumber,
-          summary: result.summary,
-          completed: true,
-          has_blocking_issues: result.hasBlockingIssues
-        })
-        .catch((error) => {
-          logger.warning(`Failed to record pass completion: ${error}`)
-        })
+      this.stateManager.recordPassCompletion(result).catch((error) => {
+        logger.warning(`Failed to record pass completion: ${error}`)
+      })
     }
+  }
+
+  findDuplicateThread(
+    file: string,
+    line: number,
+    finding: string
+  ): ReviewThread | null {
+    return this.stateManager.findDuplicateThread(file, line, finding)
   }
 
   private async detectSecuritySensitivity(): Promise<string> {
@@ -431,6 +564,30 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
     return new Promise((resolve) => setTimeout(resolve, ms))
   }
 
+  private async sanitizeExternalInput(
+    input: string,
+    context: string
+  ): Promise<string> {
+    const result = await this.injectionDetector.detectAndSanitize(input)
+
+    if (result.isConfirmedInjection) {
+      logger.error(
+        `Blocked prompt injection in ${context}. Threats: ${result.detectedThreats.join(', ')}`
+      )
+      throw new OrchestratorError(
+        `Content blocked: potential prompt injection detected in ${context}`
+      )
+    }
+
+    if (result.isSuspicious) {
+      logger.warning(
+        `Suspicious content in ${context} passed after LLM verification. Threats checked: ${result.detectedThreats.join(', ')}`
+      )
+    }
+
+    return result.sanitizedInput
+  }
+
   async updateThreadStatus(
     threadId: string,
     status: 'PENDING' | 'RESOLVED' | 'DISPUTED' | 'ESCALATED'
@@ -495,8 +652,13 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
         throw new OrchestratorError('No question context provided')
       }
 
+      const sanitizedQuestion = await this.sanitizeExternalInput(
+        questionContext.question,
+        `question from ${questionContext.author}`
+      )
+
       logger.info(
-        `Question from ${questionContext.author}: "${questionContext.question}"`
+        `Question from ${questionContext.author}: "${sanitizedQuestion}"`
       )
 
       if (questionContext.fileContext) {
@@ -516,7 +678,7 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
       )
 
       const prompt = REVIEW_PROMPTS.ANSWER_QUESTION(
-        questionContext.question,
+        sanitizedQuestion,
         questionContext.author,
         questionContext.fileContext,
         prContext.files.length > 0 ? prContext : undefined

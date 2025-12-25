@@ -28,8 +28,8 @@ import require$$0$9 from 'diagnostics_channel';
 import require$$2$3 from 'child_process';
 import require$$6$1 from 'timers';
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync, chmodSync, unlinkSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { writeFileSync, mkdirSync, chmodSync, unlinkSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { readFile, mkdir, readdir, copyFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -27292,6 +27292,7 @@ const OPENCODE_SERVER_URL = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PO
 const TRPC_SERVER_PORT = 38291;
 const TRPC_SERVER_HOST = 'localhost';
 const TRPC_SERVER_URL = `http://${TRPC_SERVER_HOST}:${TRPC_SERVER_PORT}`;
+const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 var github = {};
 
@@ -31283,7 +31284,7 @@ function parseInputs() {
         ? humanReviewersInput.split(',').map((r) => r.trim())
         : [];
     const context = githubExports.context;
-    const { mode, prNumber, questionContext } = detectExecutionMode(context);
+    const { mode, prNumber, questionContext, disputeContext } = detectExecutionMode(context);
     const owner = context.repo.owner;
     const repo = context.repo.repo;
     if (!apiKey || apiKey.trim() === '') {
@@ -31319,11 +31320,45 @@ function parseInputs() {
         },
         execution: {
             mode,
-            questionContext
+            questionContext,
+            disputeContext
         }
     };
 }
 function detectExecutionMode(context) {
+    if (context.eventName === 'pull_request_review_comment') {
+        const comment = context.payload.comment;
+        const pullRequest = context.payload.pull_request;
+        if (!pullRequest?.number) {
+            throw new Error('No PR number found in pull_request_review_comment event.');
+        }
+        const inReplyToId = comment?.in_reply_to_id;
+        if (!inReplyToId) {
+            coreExports.info('Review comment is not a reply to an existing thread, skipping dispute resolution.');
+            throw new Error('This action only handles replies to existing review threads. New review comments are ignored.');
+        }
+        const commentAuthor = comment?.user?.login || 'unknown';
+        const botUsers = ['github-actions[bot]', 'opencode-reviewer[bot]'];
+        if (botUsers.includes(commentAuthor)) {
+            coreExports.info('Ignoring comment from bot user to prevent loops.');
+            throw new Error('Skipping: Comment is from a bot user.');
+        }
+        coreExports.info(`Dispute/reply detected on thread ${inReplyToId}`);
+        coreExports.info(`Reply by: ${commentAuthor}`);
+        coreExports.info(`Reply body: ${comment?.body?.substring(0, 100)}...`);
+        return {
+            mode: 'dispute-resolution',
+            prNumber: pullRequest.number,
+            disputeContext: {
+                threadId: String(inReplyToId),
+                replyCommentId: String(comment?.id || ''),
+                replyBody: comment?.body || '',
+                replyAuthor: commentAuthor,
+                file: comment?.path || '',
+                line: comment?.line || comment?.original_line
+            }
+        };
+    }
     if (context.eventName === 'issue_comment') {
         const comment = context.payload.comment;
         const issue = context.payload.issue;
@@ -31379,7 +31414,7 @@ function detectExecutionMode(context) {
             prNumber
         };
     }
-    throw new Error(`Unsupported event: ${context.eventName}. This action supports 'pull_request' and 'issue_comment' events only.`);
+    throw new Error(`Unsupported event: ${context.eventName}. This action supports 'pull_request', 'issue_comment', and 'pull_request_review_comment' events.`);
 }
 function parseNumericInput(name, defaultValue, min, max, errorMessage) {
     const input = coreExports.getInput(name, { required: false });
@@ -35357,7 +35392,7 @@ class GitHubAPI {
                 repo: this.repo,
                 pull_number: this.prNumber,
                 comment_id: Number(threadId),
-                body: `✅ **Issue Resolved**\n\n${reason}`
+                body: `✅ **Issue Resolved**\n\n${reason}\n\n\`\`\`rmcoc\n{"status": "RESOLVED"}\n\`\`\``
             });
             await this.resolveReviewThread(threadId);
             logger.info(`Resolved thread ${threadId}`);
@@ -35383,7 +35418,14 @@ class GitHubAPI {
             logger.debug(`GraphQL: Resolved review thread ${threadId}`);
         }
         catch (error) {
-            logger.warning(`Failed to resolve review thread via GraphQL: ${error instanceof Error ? error.message : String(error)}`);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (errorMessage.includes('Resource not accessible by integration')) {
+                logger.debug(`Cannot auto-resolve thread via GraphQL - requires a PAT with elevated permissions. ` +
+                    `The thread has been marked as resolved via comment.`);
+            }
+            else {
+                logger.warning(`Failed to resolve review thread via GraphQL: ${errorMessage}`);
+            }
         }
     }
     async getReviewThreadId(commentId) {
@@ -35445,7 +35487,11 @@ ${agentPosition}
 **Developer's Position:**
 ${developerPosition}
 
-${reviewerTags} - Please review this dispute and make a final decision.`
+${reviewerTags} - Please review this dispute and make a final decision.
+
+\`\`\`rmcoc
+{"status": "ESCALATED"}
+\`\`\``
             });
             logger.info(`Escalated thread ${threadId} to ${reviewers.join(', ')}`);
         }
@@ -37090,11 +37136,14 @@ function createOpencodeClient(config) {
     return new OpencodeClient({ client });
 }
 
+const MAX_REPEATED_TOOL_CALLS = 5;
+const LOOP_DETECTION_WINDOW = 10;
 class OpenCodeClientImpl {
     currentSessionId = null;
     client;
     debugLogging;
     timeoutMs;
+    recentToolCalls = [];
     constructor(serverUrl, debugLogging = false, timeoutMs = 600000) {
         this.client = createOpencodeClient({
             baseUrl: serverUrl,
@@ -37102,6 +37151,36 @@ class OpenCodeClientImpl {
         });
         this.debugLogging = debugLogging;
         this.timeoutMs = timeoutMs;
+    }
+    resetLoopDetection() {
+        this.recentToolCalls = [];
+    }
+    detectLoop(toolCall) {
+        this.recentToolCalls.push(toolCall);
+        if (this.recentToolCalls.length > LOOP_DETECTION_WINDOW) {
+            this.recentToolCalls.shift();
+        }
+        if (this.recentToolCalls.length < MAX_REPEATED_TOOL_CALLS) {
+            return false;
+        }
+        const callCounts = new Map();
+        for (const call of this.recentToolCalls) {
+            callCounts.set(call, (callCounts.get(call) || 0) + 1);
+        }
+        for (const [call, count] of callCounts) {
+            if (count >= MAX_REPEATED_TOOL_CALLS) {
+                logger.warning(`Loop detected: tool call "${call}" repeated ${count} times in last ${LOOP_DETECTION_WINDOW} calls`);
+                return true;
+            }
+        }
+        const recentCalls = this.recentToolCalls.slice(-MAX_REPEATED_TOOL_CALLS);
+        const uniqueCalls = new Set(recentCalls);
+        if (uniqueCalls.size <= 2 &&
+            recentCalls.length >= MAX_REPEATED_TOOL_CALLS) {
+            logger.warning(`Loop detected: only ${uniqueCalls.size} unique tool calls in last ${recentCalls.length} calls: ${[...uniqueCalls].join(', ')}`);
+            return true;
+        }
+        return false;
     }
     async createSession(title) {
         try {
@@ -37166,6 +37245,7 @@ class OpenCodeClientImpl {
     async sendPrompt(sessionId, prompt) {
         try {
             logger.debug(`Sending prompt to session ${sessionId} (${prompt.length} chars)`);
+            const completionPromise = this.waitForPromptCompletion(sessionId);
             await this.client.session.promptAsync({
                 path: { id: sessionId },
                 body: {
@@ -37178,7 +37258,7 @@ class OpenCodeClientImpl {
                 }
             });
             logger.debug(`Prompt queued, waiting for LLM to complete via events...`);
-            await this.waitForPromptCompletion(sessionId);
+            await completionPromise;
             logger.debug(`Prompt completed successfully for session ${sessionId}`);
         }
         catch (error) {
@@ -37189,6 +37269,7 @@ class OpenCodeClientImpl {
         const startTime = Date.now();
         const abortController = new AbortController();
         let sawBusy = false;
+        this.resetLoopDetection();
         return new Promise((resolve, reject) => {
             let resolved = false;
             const timeoutId = setTimeout(() => {
@@ -37215,6 +37296,21 @@ class OpenCodeClientImpl {
                         const props = event.properties;
                         if (props.sessionID !== sessionId) {
                             continue;
+                        }
+                        if (event.type === 'message.part.updated' &&
+                            props.part?.type === 'tool') {
+                            const part = props.part;
+                            const toolName = part.tool || 'unknown';
+                            const toolInput = part.input
+                                ? JSON.stringify(part.input).substring(0, 200)
+                                : '';
+                            const toolSignature = `${toolName}:${toolInput}`;
+                            if (this.detectLoop(toolSignature)) {
+                                resolved = true;
+                                cleanup();
+                                reject(new OpenCodeError(`Loop detected: Agent is repeatedly calling the same tools with same arguments. This usually indicates the agent is stuck. Aborting session.`));
+                                return;
+                            }
                         }
                         if (event.type === 'session.status' &&
                             props.status &&
@@ -37348,6 +37444,49 @@ class OpenCodeClientImpl {
     }
 }
 
+const DEFAULT_MAX_TOKENS = 10;
+const DEFAULT_TEMPERATURE = 0.1;
+class LLMClientImpl {
+    config;
+    constructor(config) {
+        this.config = config;
+    }
+    async complete(prompt, options) {
+        const requestBody = {
+            model: this.config.model,
+            messages: [
+                {
+                    role: 'user',
+                    content: prompt
+                }
+            ],
+            temperature: options?.temperature ?? DEFAULT_TEMPERATURE,
+            max_tokens: options?.maxTokens ?? DEFAULT_MAX_TOKENS
+        };
+        try {
+            const response = await fetch(OPENROUTER_API_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${this.config.apiKey}`,
+                    'HTTP-Referer': 'https://github.com/opencode-pr-reviewer',
+                    'X-Title': 'OpenCode PR Reviewer'
+                },
+                body: JSON.stringify(requestBody)
+            });
+            if (!response.ok) {
+                throw new Error(`OpenRouter API request failed: ${response.status} ${response.statusText}`);
+            }
+            const data = (await response.json());
+            return data.choices?.[0]?.message?.content?.trim() ?? null;
+        }
+        catch (error) {
+            logger.warning(`LLM completion failed: ${error instanceof Error ? error.message : String(error)}`);
+            throw error;
+        }
+    }
+}
+
 function getOpenCodeCLICommand() {
     // Use npx to run opencode-ai CLI - this works in GitHub Actions
     // without needing node_modules to be present
@@ -37448,35 +37587,37 @@ class OpenCodeServer {
         logger.debug(`Starting OpenCode server on port ${OPENCODE_SERVER_PORT} with model ${this.config.opencode.model}`);
         logger.debug(`Running: ${command} ${serveArgs.join(' ')}`);
         logger.debug(`Using config file: ${this.configFilePath}`);
+        const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd();
+        const filteredEnv = {};
+        for (const [key, value] of Object.entries(process.env)) {
+            if (value !== undefined && !key.startsWith('OPENCODE_')) {
+                filteredEnv[key] = value;
+            }
+        }
+        filteredEnv['OPENCODE_CONFIG'] = this.configFilePath || '';
+        logger.info(`OpenCode environment: OPENCODE_CONFIG=${filteredEnv['OPENCODE_CONFIG']}`);
         this.serverProcess = spawn(command, serveArgs, {
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: {
-                ...process.env,
-                OPENCODE_CONFIG: this.configFilePath
-            },
+            cwd: workspaceDir,
+            env: filteredEnv,
             detached: false
         });
         this.attachProcessHandlers();
     }
     createConfigFile() {
-        const tempDir = tmpdir();
-        const configDir = join(tempDir, 'opencode-pr-reviewer');
-        try {
-            mkdirSync(configDir, { recursive: true });
-        }
-        catch (error) {
-            throw new OpenCodeError(`Failed to create config directory: ${error instanceof Error ? error.message : String(error)}`);
-        }
-        const configPath = join(configDir, 'opencode.json');
+        const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd();
+        const configPath = join(workspaceDir, 'opencode.json');
         const model = this.config.opencode.model;
+        const openrouterModel = `openrouter/${model}`;
         const config = {
             $schema: 'https://opencode.ai/config.json',
+            model: openrouterModel,
+            enabled_providers: ['openrouter'],
+            disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
             provider: {
                 openrouter: {
                     models: {
-                        [model]: {
-                            default: true
-                        }
+                        [model]: {}
                     }
                 }
             },
@@ -37492,8 +37633,9 @@ class OpenCodeServer {
         };
         try {
             writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
-            logger.debug(`Created OpenCode config file: ${configPath}`);
-            logger.debug(`Config contents: ${JSON.stringify(config, null, 2)}`);
+            logger.info(`Created OpenCode config file: ${configPath}`);
+            logger.info(`Config model: ${openrouterModel}`);
+            logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`);
         }
         catch (error) {
             throw new OpenCodeError(`Failed to write config file: ${error instanceof Error ? error.message : String(error)}`);
@@ -37687,14 +37829,16 @@ class OpenCodeServer {
 }
 
 const STATE_SCHEMA_VERSION = 1;
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const BOT_USERS = ['opencode-reviewer[bot]', 'github-actions[bot]'];
 class StateManager {
     config;
+    llmClient;
     octokit;
     sentimentCache;
     currentState = null;
-    constructor(config) {
+    constructor(config, llmClient) {
         this.config = config;
+        this.llmClient = llmClient;
         this.octokit = new Octokit({
             auth: config.github.token
         });
@@ -37733,6 +37877,10 @@ class StateManager {
             }
             for (const comment of reviewComments.data) {
                 if (comment.in_reply_to_id) {
+                    continue;
+                }
+                const commentAuthor = comment.user?.login;
+                if (!commentAuthor || !BOT_USERS.includes(commentAuthor)) {
                     continue;
                 }
                 const threadId = String(comment.id);
@@ -37794,6 +37942,10 @@ class StateManager {
             if (!isBot) {
                 continue;
             }
+            const statusFromBlock = this.extractStatusFromRmcocBlock(reply.body);
+            if (statusFromBlock) {
+                return statusFromBlock;
+            }
             if (reply.body.includes('✅ **Issue Resolved**')) {
                 return 'RESOLVED';
             }
@@ -37803,8 +37955,28 @@ class StateManager {
         }
         return 'PENDING';
     }
+    extractStatusFromRmcocBlock(body) {
+        const match = body.match(/```rmcoc\s*(\{[\s\S]*?\})\s*```/);
+        if (!match?.[1]) {
+            return null;
+        }
+        try {
+            const parsed = JSON.parse(match[1]);
+            if (parsed.status === 'RESOLVED') {
+                return 'RESOLVED';
+            }
+            if (parsed.status === 'ESCALATED') {
+                return 'ESCALATED';
+            }
+        }
+        catch {
+            return null;
+        }
+        return null;
+    }
     extractAssessmentFromComment(body) {
         const patterns = [
+            /```rmcoc\s*(\{[\s\S]*?\})\s*```/,
             /```json\s*(\{[\s\S]*?\})\s*```/,
             /(\{\s*"finding"[\s\S]*?"score"\s*:\s*\d+\s*\})/
         ];
@@ -37835,6 +38007,9 @@ class StateManager {
             .replace(/\\`/g, "'")
             // Replace standalone backticks with single quotes
             .replace(/`/g, "'"));
+    }
+    sanitizePromptInput(input) {
+        return input.replace(/"""/g, '\\"\\"\\"');
     }
     async detectConcession(body) {
         const cacheKey = this.generateSentimentCacheKey(body);
@@ -37878,7 +38053,11 @@ class StateManager {
         const lowerBody = body.toLowerCase();
         return concessionPhrases.some((phrase) => lowerBody.includes(phrase));
     }
+    async callLLM(prompt) {
+        return this.llmClient.complete(prompt);
+    }
     async analyzeCommentSentiment(commentBody) {
+        const sanitizedBody = this.sanitizePromptInput(commentBody);
         const prompt = `You are analyzing a code review comment to determine if the developer is conceding to a reviewer's suggestion.
 
 A concession means the developer:
@@ -37895,40 +38074,15 @@ A concession does NOT include:
 
 Comment to analyze:
 """
-${commentBody}
+${sanitizedBody}
 """
 
 Respond with ONLY "true" if this is a concession, or "false" if it is not.`;
-        const requestBody = {
-            model: this.config.opencode.model,
-            messages: [
-                {
-                    role: 'user',
-                    content: prompt
-                }
-            ],
-            temperature: 0.1,
-            max_tokens: 10
-        };
-        const response = await fetch(OPENROUTER_API_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${this.config.opencode.apiKey}`,
-                'HTTP-Referer': 'https://github.com/opencode-pr-reviewer',
-                'X-Title': 'OpenCode PR Reviewer'
-            },
-            body: JSON.stringify(requestBody)
-        });
-        if (!response.ok) {
-            throw new Error(`OpenRouter API request failed: ${response.status} ${response.statusText}`);
-        }
-        const data = (await response.json());
-        const content = data.choices?.[0]?.message?.content?.trim().toLowerCase();
-        if (content === 'true') {
+        const content = await this.callLLM(prompt);
+        if (/^true/i.test(content || '')) {
             return true;
         }
-        if (content === 'false') {
+        if (/^false/i.test(content || '')) {
             return false;
         }
         coreExports.debug(`Unexpected sentiment analysis response: ${content}, defaulting to false`);
@@ -38000,13 +38154,15 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`;
         }
     }
     async classifyDeveloperReply(originalFinding, replyBody) {
+        const sanitizedFinding = this.sanitizePromptInput(originalFinding);
+        const sanitizedReply = this.sanitizePromptInput(replyBody);
         const prompt = `You are analyzing a developer's response to a code review comment to classify their intent.
 
-Original finding: "${originalFinding}"
+Original finding: "${sanitizedFinding}"
 
 Developer's response:
 """
-${replyBody}
+${sanitizedReply}
 """
 
 Classify the response as ONE of the following:
@@ -38016,40 +38172,19 @@ Classify the response as ONE of the following:
 - "out_of_scope": Developer acknowledges but will fix later (e.g., "will fix in next sprint", "out of scope for this PR")
 
 Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`;
-        const requestBody = {
-            model: this.config.opencode.model,
-            messages: [
-                {
-                    role: 'user',
-                    content: prompt
-                }
-            ],
-            temperature: 0.1,
-            max_tokens: 10
-        };
         try {
-            const response = await fetch(OPENROUTER_API_URL, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${this.config.opencode.apiKey}`,
-                    'HTTP-Referer': 'https://github.com/opencode-pr-reviewer',
-                    'X-Title': 'OpenCode PR Reviewer'
-                },
-                body: JSON.stringify(requestBody)
-            });
-            if (!response.ok) {
-                throw new Error(`OpenRouter API request failed: ${response.status} ${response.statusText}`);
+            const content = (await this.callLLM(prompt)) || '';
+            if (/^acknowledgment/i.test(content)) {
+                return 'acknowledgment';
             }
-            const data = (await response.json());
-            const content = data.choices?.[0]?.message?.content
-                ?.trim()
-                .toLowerCase();
-            if (content === 'acknowledgment' ||
-                content === 'dispute' ||
-                content === 'question' ||
-                content === 'out_of_scope') {
-                return content;
+            if (/^dispute/i.test(content)) {
+                return 'dispute';
+            }
+            if (/^question/i.test(content)) {
+                return 'question';
+            }
+            if (/^out_of_scope/i.test(content)) {
+                return 'out_of_scope';
             }
             coreExports.debug(`Unexpected classification response: ${content}, defaulting to dispute`);
             return 'dispute';
@@ -38108,7 +38243,133 @@ Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`;
         }
         return threadsWithReplies;
     }
+    findDuplicateThread(file, line, finding) {
+        if (!this.currentState) {
+            return null;
+        }
+        return (this.currentState.threads.find((t) => t.file === file &&
+            t.line === line &&
+            t.status !== 'RESOLVED' &&
+            this.isSimilarFinding(t.assessment.finding, finding)) || null);
+    }
+    isSimilarFinding(existing, incoming) {
+        const normalizedExisting = this.normalizeForComparison(existing);
+        const normalizedIncoming = this.normalizeForComparison(incoming);
+        if (normalizedExisting === normalizedIncoming) {
+            return true;
+        }
+        const existingWords = this.getSignificantWords(existing);
+        const incomingWords = this.getSignificantWords(incoming);
+        if (existingWords.size === 0 || incomingWords.size === 0) {
+            return false;
+        }
+        const intersection = [...existingWords].filter((w) => incomingWords.has(w));
+        const smallerSet = Math.min(existingWords.size, incomingWords.size);
+        const overlapRatio = intersection.length / smallerSet;
+        return overlapRatio >= 0.5;
+    }
+    normalizeForComparison(text) {
+        return text
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+    getSignificantWords(text) {
+        const words = this.normalizeForComparison(text).split(' ');
+        return new Set(words.filter((w) => w.length > 2 && !STOP_WORDS.has(w)));
+    }
 }
+const STOP_WORDS = new Set([
+    'a',
+    'an',
+    'the',
+    'is',
+    'are',
+    'was',
+    'were',
+    'be',
+    'been',
+    'being',
+    'have',
+    'has',
+    'had',
+    'do',
+    'does',
+    'did',
+    'will',
+    'would',
+    'could',
+    'should',
+    'may',
+    'might',
+    'must',
+    'shall',
+    'can',
+    'need',
+    'dare',
+    'ought',
+    'used',
+    'to',
+    'of',
+    'in',
+    'for',
+    'on',
+    'with',
+    'at',
+    'by',
+    'from',
+    'as',
+    'into',
+    'through',
+    'during',
+    'before',
+    'after',
+    'above',
+    'below',
+    'between',
+    'under',
+    'again',
+    'further',
+    'then',
+    'once',
+    'here',
+    'there',
+    'when',
+    'where',
+    'why',
+    'how',
+    'all',
+    'each',
+    'few',
+    'more',
+    'most',
+    'other',
+    'some',
+    'such',
+    'no',
+    'nor',
+    'not',
+    'only',
+    'own',
+    'same',
+    'so',
+    'than',
+    'too',
+    'very',
+    'just',
+    'and',
+    'but',
+    'if',
+    'or',
+    'because',
+    'until',
+    'while',
+    'this',
+    'that',
+    'these',
+    'those'
+]);
 class StateError extends Error {
     cause;
     constructor(message, cause) {
@@ -38185,10 +38446,11 @@ const TOOL_USAGE_GUIDELINES = `## Tool Usage Guidelines
 - Returns threads with status: PENDING, RESOLVED, or DISPUTED
 - Call at start of review to understand existing context
 
-**\`submit_pass_results(pass_number, summary, has_blocking_issues)\`**
+**\`submit_pass_results(pass_number, has_blocking_issues)\`**
 - Marks current pass as complete
 - Triggers orchestrator to provide next pass prompt
 - Required at end of each pass
+- Will reject duplicate submissions for the same pass number
 
 ### OpenCode Exploration Tools
 
@@ -38210,14 +38472,10 @@ Use these tools to understand code beyond the PR diff:
 Every \`github_post_review_comment\` must include:
 
 1. Human-readable explanation
-2. Structured assessment object:
-   \`\`\`json
-   {
-     "finding": "Brief one-sentence description",
-     "assessment": "Detailed analysis of impact",
-     "score": 7
-   }
-   \`\`\`
+2. Structured assessment object (the tool handles formatting automatically):
+   - \`finding\`: Brief one-sentence description
+   - \`assessment\`: Detailed analysis of impact  
+   - \`score\`: Severity score from 1-10
 3. Optional: Additional context, examples, or suggestions
 
 ### Comment Formatting for Coding Agents
@@ -38248,7 +38506,45 @@ This prevents the security vulnerability where expired tokens could still be acc
 This function has a bug with token expiration.
 \`\`\`
 
-**IMPORTANT:** Never create GitHub's native "Suggestions" (committable code blocks). Only use markdown code blocks and pseudo-code for illustration.`;
+**IMPORTANT:** Never create GitHub's native "Suggestions" (committable code blocks). Only use markdown code blocks and pseudo-code for illustration.
+
+### Comment Content Rules (CRITICAL)
+
+Your review comments must be **publication-ready**. They will be posted directly to GitHub without any editing.
+
+**DO NOT include in comments:**
+- Internal reasoning or thought process (e.g., "let me think...", "wait...", "actually...")
+- Self-corrections (e.g., "Correction:", "On second thought...")
+- Uncertainty markers (e.g., "I think...", "maybe...", "perhaps...")
+- Meta-commentary about your analysis process
+- Incomplete sentences or trailing thoughts
+- Questions to yourself
+- Draft notes or placeholder text
+
+**Every comment MUST be:**
+- Complete and self-contained
+- Written in professional, confident language
+- Ready to be read by the PR author without confusion
+- Free of any "thinking out loud" content
+
+**If you realize mid-thought that your analysis is incomplete or incorrect:**
+- Do NOT post the comment
+- Re-analyze silently
+- Only post when you have a complete, correct finding
+
+**Example of BAD comment (contains thinking):**
+\`\`\`
+The StateManager makes direct HTTP calls... wait, let me check if it has access to OpenCodeClient.
+Correction: StateManager only has ReviewConfig. The OpenCodeClient is in main.ts...
+Actually, the Orchestrator has both. So the fix would be to pass...
+\`\`\`
+
+**Example of GOOD comment (publication-ready):**
+\`\`\`
+The \`StateManager\` class makes direct HTTP requests to the OpenRouter API, bypassing the \`OpenCodeClient\` abstraction.
+
+**Recommendation:** Pass the \`OpenCodeClient\` instance to \`StateManager\` via the \`Orchestrator\`, or extract the sentiment analysis into a service method on the \`Orchestrator\` that uses the existing client.
+\`\`\``;
 const SYSTEM_PROMPT = `# OpenCode PR Review Agent
 
 You are a Senior Developer conducting a thorough multi-pass code review. You will perform 4 sequential passes, each building on the previous one.
@@ -38386,7 +38682,7 @@ ${files.map((f) => `- ${f}`).join('\n')}
 
 **Tip:** Start by reading the most critical files first (e.g., source code over config files).
 
-When you have completed this pass, call \`submit_pass_results(1, summary, has_blocking_issues)\`.`,
+When you have completed this pass, call \`submit_pass_results(1, has_blocking_issues)\`.`,
     PASS_2: () => `## Pass 2 of 3: Structural/Layered Review
 
 **Goal:** Understand how changes fit into the broader codebase. Use OpenCode tools to:
@@ -38408,7 +38704,7 @@ Use \`read\`, \`grep\`, \`glob\`, and \`list\` tools to explore the codebase and
 
 Post comments for any structural issues you find using \`github_post_review_comment\`.
 
-When you have completed this pass, call \`submit_pass_results(2, summary, has_blocking_issues)\`.`,
+When you have completed this pass, call \`submit_pass_results(2, has_blocking_issues)\`.`,
     PASS_3: (securitySensitivity) => `## Pass 3 of 3: Security & Compliance Audit
 
 **Goal:** Security audit and rule enforcement:
@@ -38433,7 +38729,7 @@ Conduct a thorough security review of the changes. Remember to elevate security 
 
 Post comments for any security or compliance issues using \`github_post_review_comment\`.
 
-When you have completed this pass, call \`submit_pass_results(3, summary, has_blocking_issues)\` to finalize the review.`,
+When you have completed this pass, call \`submit_pass_results(3, has_blocking_issues)\` to finalize the review.`,
     FIX_VERIFICATION: (previousIssues, newCommits) => `## Fix Verification for Existing Issues
 
 **Previous Review State:**
@@ -38447,13 +38743,16 @@ ${newCommits}
 2. For each fixed issue, call \`github_resolve_thread(thread_id, reason)\` with a clear explanation of how it was fixed
 3. For issues that remain unaddressed, leave them as-is (do NOT add follow-up comments)
 
-**IMPORTANT:**
-- This pass is ONLY for verifying existing issues - do NOT look for new issues
+**IMPORTANT - This is NOT a review pass:**
+- This is fix verification ONLY - do NOT look for new issues
 - Do NOT post any new review comments using \`github_post_review_comment\`
+- Do NOT call \`submit_pass_results\` - this is not a review pass
 - Only use \`github_resolve_thread\` to mark fixed issues as resolved
 - New issue discovery will happen in the subsequent review passes
 
-Use OpenCode tools to verify cross-file fixes (e.g., issue in file_A.ts fixed by change in file_B.ts).`,
+Use OpenCode tools to verify cross-file fixes (e.g., issue in file_A.ts fixed by change in file_B.ts).
+
+When you have finished verifying all issues, simply stop. Do not call any pass completion tools.`,
     DISPUTE_EVALUATION: (threadId, originalFinding, originalAssessment, originalScore, filePath, lineNumber, developerResponse, classification, humanEscalationEnabled = false) => `## Evaluate Developer Response to Review Comment
 
 You previously raised an issue in your code review. The developer has now responded.
@@ -38537,7 +38836,9 @@ When a dispute cannot be resolved after both sides have presented their position
   * Low-severity issues (score < 5)
 
 `
-        : ''}Use the OpenCode exploration tools to thoroughly verify claims before making your decision.`,
+        : ''}**This is NOT a review pass** - do NOT call \`submit_pass_results\`. When you have responded to this thread, simply stop.
+
+Use the OpenCode exploration tools to thoroughly verify claims before making your decision.`,
     CLARIFY_REVIEW_FINDING: (originalFinding, originalAssessment, developerQuestion, filePath, lineNumber) => `## Clarify Review Finding
 
 You previously raised a code review issue, and the developer is asking for clarification.
@@ -38602,6 +38903,8 @@ This matters because session expiry is common (30min timeout in \`src/config/aut
 
 Does this clarify the concern?
 \`\`\`
+
+**This is NOT a review pass** - do NOT call \`submit_pass_results\`. When you have provided your clarification, simply stop.
 
 Now explore the codebase and provide your clarification.`,
     ANSWER_QUESTION: (question, author, fileContext, prContext) => {
@@ -38705,12 +39008,13 @@ class ReviewOrchestrator {
     passResults = [];
     reviewState = null;
     currentSessionId = null;
-    constructor(opencode, github, config, workspaceRoot) {
+    currentPhase = 'idle';
+    constructor(opencode, llmClient, github, config, workspaceRoot) {
         this.opencode = opencode;
         this.github = github;
         this.config = config;
         this.workspaceRoot = workspaceRoot;
-        this.stateManager = new StateManager(config);
+        this.stateManager = new StateManager(config, llmClient);
     }
     async executeReview() {
         return await logger.group('Executing Multi-Pass Review', async () => {
@@ -38758,6 +39062,8 @@ class ReviewOrchestrator {
         await Promise.race([this.executeMultiPassReview(), timeoutPromise]);
     }
     async executeMultiPassReview() {
+        this.currentPhase = 'multi-pass-review';
+        this.passResults = [];
         const files = await this.github.getPRFiles();
         const securitySensitivity = await this.detectSecuritySensitivity();
         logger.info(`Fetched ${files.length} changed files`);
@@ -38766,21 +39072,30 @@ class ReviewOrchestrator {
         await this.executePass(2, REVIEW_PROMPTS.PASS_2());
         await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity));
         logger.info('All 3 passes completed in single session');
+        this.currentPhase = 'idle';
     }
     async executeFixVerification() {
         await logger.group('Fix Verification', async () => {
             if (!this.reviewState) {
                 throw new OrchestratorError('Review state not loaded');
             }
+            this.currentPhase = 'fix-verification';
             const previousIssues = this.formatPreviousIssues();
             const newCommits = await this.getNewCommitsSummary();
             const prompt = REVIEW_PROMPTS.FIX_VERIFICATION(previousIssues, newCommits);
             logger.info(`Verifying ${this.reviewState.threads.filter((t) => t.status !== 'RESOLVED').length} unresolved issues`);
             await this.sendPromptToOpenCode(prompt);
+            this.currentPhase = 'idle';
         });
     }
-    async executeDisputeResolution() {
+    async executeDisputeResolution(disputeContext) {
         await logger.group('Dispute Resolution', async () => {
+            this.currentPhase = 'dispute-resolution';
+            if (disputeContext) {
+                await this.handleSingleDispute(disputeContext);
+                this.currentPhase = 'idle';
+                return;
+            }
             const threadsWithReplies = await this.stateManager.getThreadsWithDeveloperReplies();
             if (threadsWithReplies.length === 0) {
                 logger.info('No developer replies to evaluate');
@@ -38808,7 +39123,34 @@ class ReviewOrchestrator {
                 }
                 await this.sendPromptToOpenCode(prompt);
             }
+            this.currentPhase = 'idle';
         });
+    }
+    async handleSingleDispute(disputeContext) {
+        const { threadId, replyBody, replyAuthor, file, line } = disputeContext;
+        logger.info(`Processing reply from ${replyAuthor} on thread ${threadId}`);
+        logger.info(`File: ${file}:${line || 'N/A'}`);
+        const state = await this.stateManager.getOrCreateState();
+        const thread = state.threads.find((t) => t.id === threadId);
+        if (!thread) {
+            logger.warning(`Thread ${threadId} not found in state. This may be a reply to a non-bot comment.`);
+            return;
+        }
+        if (thread.status === 'RESOLVED') {
+            logger.info(`Thread ${threadId} is already resolved, skipping.`);
+            return;
+        }
+        const classification = await this.stateManager.classifyDeveloperReply(thread.assessment.finding, replyBody);
+        logger.info(`Classified reply as: ${classification} (thread ${threadId}, author: ${replyAuthor})`);
+        let prompt;
+        if (classification === 'question') {
+            logger.info('Developer asked for clarification - using Q&A mode for detailed explanation');
+            prompt = REVIEW_PROMPTS.CLARIFY_REVIEW_FINDING(thread.assessment.finding, thread.assessment.assessment, replyBody, thread.file, thread.line);
+        }
+        else {
+            prompt = REVIEW_PROMPTS.DISPUTE_EVALUATION(thread.id, thread.assessment.finding, thread.assessment.assessment, thread.score, thread.file, thread.line, replyBody, classification, this.config.dispute.enableHumanEscalation);
+        }
+        await this.sendPromptToOpenCode(prompt);
     }
     async executePass(passNumber, prompt) {
         await logger.group(`Pass ${passNumber} of 4`, async () => {
@@ -38863,9 +39205,14 @@ class ReviewOrchestrator {
             }
         }
     }
+    isPassCompleted(passNumber) {
+        return this.passResults.some((p) => p.passNumber === passNumber);
+    }
+    isInMultiPassReview() {
+        return this.currentPhase === 'multi-pass-review';
+    }
     recordPassCompletion(result) {
         logger.info(`Pass ${result.passNumber} completed: ${result.hasBlockingIssues ? 'HAS BLOCKING ISSUES' : 'no blocking issues'}`);
-        logger.debug(`Pass ${result.passNumber} summary: ${result.summary}`);
         const existingIndex = this.passResults.findIndex((p) => p.passNumber === result.passNumber);
         if (existingIndex >= 0) {
             this.passResults[existingIndex] = result;
@@ -38877,7 +39224,6 @@ class ReviewOrchestrator {
             this.stateManager
                 .recordPassCompletion({
                 number: result.passNumber,
-                summary: result.summary,
                 completed: true,
                 has_blocking_issues: result.hasBlockingIssues
             })
@@ -38885,6 +39231,9 @@ class ReviewOrchestrator {
                 logger.warning(`Failed to record pass completion: ${error}`);
             });
         }
+    }
+    findDuplicateThread(file, line, finding) {
+        return this.stateManager.findDuplicateThread(file, line, finding);
     }
     async detectSecuritySensitivity() {
         try {
@@ -43022,6 +43371,125 @@ SuperJSON.registerCustom;
 SuperJSON.registerSymbol;
 SuperJSON.allowErrorProps;
 
+const THINKING_PATTERNS = [
+    /\bwait,\s+(?:let me|i need|actually)/i,
+    /\bactually,?\s+(?:no|wait|let me|i think i)/i,
+    /\bcorrection:/i,
+    /\bon second thought\b/i,
+    /\blet me (?:think|reconsider|check (?:if|whether))\b/i,
+    /\bhmm+\b/i,
+    /\bi(?:'m| am) not sure (?:if|whether|about)\b/i,
+    /\bi need to (?:check|verify|think|reconsider)\b/i,
+    /\bhold on,?\s+(?:let me|i need|wait)\b/i,
+    /\bnevermind\b/i,
+    /\bignore (?:that|this|the above)\b/i,
+    /\bsorry,?\s+(?:i was wrong|let me|i meant)\b/i,
+    /\bno,?\s+wait\b/i,
+    /\.{3,}\s*(?:wait|actually|hmm)/i,
+    /\((?:thinking|checking|wait)\)/i
+];
+const INCOMPLETE_PATTERNS = [
+    /\.\.\.\s*$/,
+    /\bso\s*$/i,
+    /\bbut\s*$/i,
+    /\band\s*$/i,
+    /\bwhich means\s*$/i,
+    /:\s*$/
+];
+const SELF_CORRECTION_PATTERNS = [
+    /\bcorrection\b/i,
+    /\bstrike that\b/i,
+    /\bscratch that\b/i,
+    /\bi was wrong\b/i,
+    /\bi misspoke\b/i,
+    /\bthat's not right\b/i,
+    /\blet me rephrase\b/i,
+    /\bto clarify what i meant\b/i
+];
+function detectSuspectedThinking(commentBody) {
+    const matchedPatterns = [];
+    for (const pattern of THINKING_PATTERNS) {
+        if (pattern.test(commentBody)) {
+            matchedPatterns.push(`thinking: ${pattern.source}`);
+        }
+    }
+    for (const pattern of INCOMPLETE_PATTERNS) {
+        if (pattern.test(commentBody)) {
+            matchedPatterns.push(`incomplete: ${pattern.source}`);
+        }
+    }
+    for (const pattern of SELF_CORRECTION_PATTERNS) {
+        if (pattern.test(commentBody)) {
+            matchedPatterns.push(`self-correction: ${pattern.source}`);
+        }
+    }
+    return {
+        suspected: matchedPatterns.length > 0,
+        matchedPatterns
+    };
+}
+async function verifyThinkingContent(commentBody, llmClient) {
+    const prompt = `You are a quality assurance checker for code review comments. Your task is to determine if a comment contains internal "thinking" or reasoning that should not be published.
+
+A comment contains problematic "thinking" if it includes:
+- Self-corrections mid-thought (e.g., "wait...", "actually...", "Correction:")
+- Uncertainty or hedging (e.g., "I think...", "maybe...", "perhaps...")
+- Incomplete reasoning (e.g., trailing thoughts, unfinished sentences)
+- Meta-commentary about the analysis process
+- Internal dialogue or questions to self
+- Draft notes that weren't cleaned up
+
+A comment is CLEAN if it:
+- Is complete and self-contained
+- Uses confident, professional language
+- Is ready to be read by a developer without confusion
+- May include hedging words in APPROPRIATE context (e.g., "You might want to consider..." is fine)
+
+Comment to analyze:
+"""
+${commentBody.replace(/"""/g, '\\"\\"\\"')}
+"""
+
+Does this comment contain problematic internal "thinking" that should not be published?
+
+Respond with ONLY "yes" or "no".`;
+    try {
+        const content = await llmClient.complete(prompt);
+        return /^yes/i.test(content || '');
+    }
+    catch (error) {
+        logger.warning(`Comment validation failed with error: ${error}, allowing comment`);
+        return false;
+    }
+}
+async function validateComment(commentBody, llmClient) {
+    const { suspected, matchedPatterns } = detectSuspectedThinking(commentBody);
+    if (!suspected) {
+        return {
+            isValid: true,
+            suspectedThinking: false,
+            confirmedThinking: false
+        };
+    }
+    logger.debug(`Comment flagged for potential thinking content. Patterns: ${matchedPatterns.join(', ')}`);
+    const confirmed = await verifyThinkingContent(commentBody, llmClient);
+    if (confirmed) {
+        return {
+            isValid: false,
+            suspectedThinking: true,
+            confirmedThinking: true,
+            reason: 'Comment contains internal thinking/reasoning that should not be published. Please rephrase as a clear, professional review comment.',
+            patterns: matchedPatterns
+        };
+    }
+    return {
+        isValid: true,
+        suspectedThinking: true,
+        confirmedThinking: false,
+        patterns: matchedPatterns
+    };
+}
+
 var util;
 (function (util) {
     util.assertEqual = (_) => { };
@@ -46828,7 +47296,6 @@ const resolveThreadSchema = objectType({
 });
 const submitPassResultsSchema = objectType({
     passNumber: numberType().min(1).max(4).describe('Pass number (1-4)'),
-    summary: stringType().describe('Summary of what was reviewed'),
     hasBlockingIssues: booleanType().describe('Whether blocking issues were found')
 });
 const escalateDisputeSchema = objectType({
@@ -46865,7 +47332,27 @@ const appRouter = router({
                     reason: `Score ${input.assessment.score} below threshold ${config.scoring.problemThreshold}`
                 };
             }
-            const commentBody = `${input.body}\n\n---\n\`\`\`json\n${JSON.stringify(input.assessment, null, 2)}\n\`\`\``;
+            const existingThread = ctx.orchestrator.findDuplicateThread(input.file, input.line, input.assessment.finding);
+            if (existingThread) {
+                logger.info(`Comment deduplicated: existing thread ${existingThread.id} for ${input.file}:${input.line} with similar finding`);
+                return {
+                    filtered: true,
+                    reason: `Duplicate: existing unresolved thread ${existingThread.id} with similar finding`
+                };
+            }
+            const validation = await validateComment(input.body, ctx.llmClient);
+            if (!validation.isValid) {
+                logger.warning(`Comment rejected due to thinking content: ${validation.patterns?.join(', ')}`);
+                return {
+                    filtered: true,
+                    reason: validation.reason,
+                    requiresRephrasing: true
+                };
+            }
+            if (validation.suspectedThinking && !validation.confirmedThinking) {
+                logger.debug(`Comment passed validation despite suspected patterns: ${validation.patterns?.join(', ')}`);
+            }
+            const commentBody = `${input.body}\n\n---\n\`\`\`rmcoc\n${JSON.stringify(input.assessment, null, 2)}\n\`\`\``;
             const commentId = await ctx.github.postReviewComment({
                 path: input.file,
                 line: input.line,
@@ -46894,6 +47381,21 @@ const appRouter = router({
             .input(replyToThreadSchema)
             .mutation(async ({ ctx, input }) => {
             logger.debug(`tRPC: github.replyToThread called for ${input.threadId}`);
+            const state = ctx.orchestrator.getState();
+            const thread = state?.threads.find((t) => t.id === input.threadId);
+            if (thread?.status === 'RESOLVED') {
+                logger.info(`Thread ${input.threadId} is already resolved, skipping reply`);
+                return { success: true, skipped: true };
+            }
+            const validation = await validateComment(input.body, ctx.llmClient);
+            if (!validation.isValid) {
+                logger.warning(`Reply rejected due to thinking content: ${validation.patterns?.join(', ')}`);
+                return {
+                    success: false,
+                    reason: validation.reason,
+                    requiresRephrasing: true
+                };
+            }
             await ctx.github.replyToComment(input.threadId, input.body);
             if (input.isConcession) {
                 await ctx.orchestrator.updateThreadStatus(input.threadId, 'RESOLVED');
@@ -46903,16 +47405,25 @@ const appRouter = router({
                 await ctx.orchestrator.updateThreadStatus(input.threadId, 'DISPUTED');
                 logger.info(`Thread ${input.threadId} marked as DISPUTED`);
             }
-            return { success: true };
+            return { success: true, skipped: false };
         }),
         resolveThread: publicProcedure
             .input(resolveThreadSchema)
             .mutation(async ({ ctx, input }) => {
             logger.debug(`tRPC: github.resolveThread called for ${input.threadId}`);
+            const state = ctx.orchestrator.getState();
+            const thread = state?.threads.find((t) => t.id === input.threadId);
+            if (thread?.status === 'RESOLVED') {
+                logger.info(`Thread ${input.threadId} is already resolved, skipping duplicate resolution`);
+                return {
+                    success: true,
+                    alreadyResolved: true
+                };
+            }
             await ctx.github.resolveThread(input.threadId, input.reason);
             await ctx.orchestrator.updateThreadStatus(input.threadId, 'RESOLVED');
             logger.info(`Thread ${input.threadId} resolved: ${input.reason}`);
-            return { success: true };
+            return { success: true, alreadyResolved: false };
         }),
         escalateDispute: publicProcedure
             .input(escalateDisputeSchema)
@@ -46944,15 +47455,32 @@ const appRouter = router({
             .input(submitPassResultsSchema)
             .mutation(async ({ ctx, input }) => {
             logger.info(`tRPC: review.submitPassResults called for pass ${input.passNumber}`);
+            if (!ctx.orchestrator.isInMultiPassReview()) {
+                logger.warning(`submit_pass_results called outside of multi-pass review phase - rejecting`);
+                return {
+                    success: false,
+                    error: 'submit_pass_results can only be called during the multi-pass review phase. Do not call this tool during fix verification or dispute resolution.',
+                    nextPass: null
+                };
+            }
+            const alreadyCompleted = ctx.orchestrator.isPassCompleted(input.passNumber);
+            if (alreadyCompleted) {
+                logger.warning(`Pass ${input.passNumber} already completed - rejecting duplicate submission`);
+                return {
+                    success: false,
+                    error: `Pass ${input.passNumber} has already been completed. Do not call submit_pass_results again for this pass.`,
+                    nextPass: null
+                };
+            }
             ctx.orchestrator.recordPassCompletion({
                 passNumber: input.passNumber,
-                summary: input.summary,
                 hasBlockingIssues: input.hasBlockingIssues
             });
             const nextPass = input.passNumber < 3 ? input.passNumber + 1 : null;
             logger.info(`Pass ${input.passNumber} completed. Next: ${nextPass || 'done'}`);
             return {
                 success: true,
+                error: null,
                 nextPass
             };
         })
@@ -46962,17 +47490,20 @@ const appRouter = router({
 class TRPCServer {
     orchestrator;
     github;
+    llmClient;
     port;
     server = null;
-    constructor(orchestrator, github, port = TRPC_SERVER_PORT) {
+    constructor(orchestrator, github, llmClient, port = TRPC_SERVER_PORT) {
         this.orchestrator = orchestrator;
         this.github = github;
+        this.llmClient = llmClient;
         this.port = port;
     }
     async start() {
         const context = {
             orchestrator: this.orchestrator,
-            github: this.github
+            github: this.github,
+            llmClient: this.llmClient
         };
         this.server = createHTTPServer({
             router: appRouter,
@@ -47021,9 +47552,13 @@ async function run() {
         await openCodeServer.start();
         const github = new GitHubAPI(config);
         const opencode = new OpenCodeClientImpl(OPENCODE_SERVER_URL, config.opencode.debugLogging, config.review.timeoutMs);
+        const llmClient = new LLMClientImpl({
+            apiKey: config.opencode.apiKey,
+            model: config.opencode.model
+        });
         const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
-        orchestrator = new ReviewOrchestrator(opencode, github, config, workspaceRoot);
-        trpcServer = new TRPCServer(orchestrator, github);
+        orchestrator = new ReviewOrchestrator(opencode, llmClient, github, config, workspaceRoot);
+        trpcServer = new TRPCServer(orchestrator, github, llmClient);
         await trpcServer.start();
         if (config.execution.mode === 'question-answering') {
             logger.info('Execution mode: Question Answering');
@@ -47060,7 +47595,7 @@ ${answer}
         }
         else if (config.execution.mode === 'dispute-resolution') {
             logger.info('Execution mode: Dispute Resolution Only');
-            await orchestrator.executeDisputeResolution();
+            await orchestrator.executeDisputeResolution(config.execution.disputeContext);
             coreExports.setOutput('review_status', 'disputes_evaluated');
             coreExports.setOutput('issues_found', '0');
             coreExports.setOutput('blocking_issues', '0');

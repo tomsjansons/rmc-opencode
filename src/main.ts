@@ -4,6 +4,7 @@ import { OPENCODE_SERVER_URL } from './config/constants.js'
 import { parseInputs, validateConfig } from './config/inputs.js'
 import { GitHubAPI } from './github/api.js'
 import { OpenCodeClientImpl } from './opencode/client.js'
+import { LLMClientImpl } from './opencode/llm-client.js'
 import { OpenCodeServer } from './opencode/server.js'
 import { ReviewOrchestrator } from './review/orchestrator.js'
 import { setupToolsInWorkspace } from './setup/tools.js'
@@ -41,16 +42,21 @@ export async function run(): Promise<void> {
       config.opencode.debugLogging,
       config.review.timeoutMs
     )
+    const llmClient = new LLMClientImpl({
+      apiKey: config.opencode.apiKey,
+      model: config.opencode.model
+    })
     const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd()
 
     orchestrator = new ReviewOrchestrator(
       opencode,
+      llmClient,
       github,
       config,
       workspaceRoot
     )
 
-    trpcServer = new TRPCServer(orchestrator, github)
+    trpcServer = new TRPCServer(orchestrator, github, llmClient)
     await trpcServer.start()
 
     if (config.execution.mode === 'question-answering') {
@@ -98,7 +104,9 @@ ${answer}
     } else if (config.execution.mode === 'dispute-resolution') {
       logger.info('Execution mode: Dispute Resolution Only')
 
-      await orchestrator.executeDisputeResolution()
+      await orchestrator.executeDisputeResolution(
+        config.execution.disputeContext
+      )
 
       core.setOutput('review_status', 'disputes_evaluated')
       core.setOutput('issues_found', '0')

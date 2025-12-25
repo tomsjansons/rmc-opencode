@@ -13,12 +13,25 @@ export type QuestionContext = {
   }
 }
 
+export type DisputeContext = {
+  threadId: string
+  replyCommentId: string
+  replyBody: string
+  replyAuthor: string
+  file: string
+  line?: number
+}
+
 export type ReviewConfig = {
   opencode: {
     apiKey: string
     model: string
     enableWeb: boolean
     debugLogging: boolean
+  }
+  security: {
+    injectionDetectionEnabled: boolean
+    injectionVerificationModel: string
   }
   scoring: {
     problemThreshold: number
@@ -41,6 +54,7 @@ export type ReviewConfig = {
   execution: {
     mode: ExecutionMode
     questionContext?: QuestionContext
+    disputeContext?: DisputeContext
   }
 }
 
@@ -73,7 +87,7 @@ export type ReviewState = {
 
 export type PassResult = {
   passNumber: number
-  summary: string
+  completed: boolean
   hasBlockingIssues: boolean
 }
 
