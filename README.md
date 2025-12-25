@@ -1,305 +1,518 @@
-# Create a GitHub Action Using TypeScript
+# Review My Code, OpenCode!
 
-![Linter](https://github.com/actions/typescript-action/actions/workflows/linter.yml/badge.svg)
-![CI](https://github.com/actions/typescript-action/actions/workflows/ci.yml/badge.svg)
-![Check dist/](https://github.com/actions/typescript-action/actions/workflows/check-dist.yml/badge.svg)
-![CodeQL](https://github.com/actions/typescript-action/actions/workflows/codeql-analysis.yml/badge.svg)
-![Coverage](./badges/coverage.svg)
+A GitHub Action that uses OpenCode to do LLM-powered code reviews. I've tried
+the reivew process to behave like a real developer review. No silly diagrams and
+other nonsense.
 
-Use this template to bootstrap the creation of a TypeScript action. :rocket:
+## WIP
 
-This template includes compilation support, tests, a validation workflow,
-publishing, and versioning guidance.
+This PR Review Agent is still very much wip and there will be rough edges but
+the main review loop works!
 
-If you are new, there's also a simpler introduction in the
-[Hello world JavaScript action repository](https://github.com/actions/hello-world-javascript-action).
+- PR description is currently not considered
+- Draft PRs with @review-my-code-bot not tested
+- Escalation for human review not working
+- Proably more missing/broken features
+- Overall state of the code is not ideal
 
-## Create Your Own Action
+## Features
 
-To create your own action, you can use this repository as a template! Just
-follow the below instructions:
+### Multi-Pass Review System
 
-1. Click the **Use this template** button at the top of the repository
-1. Select **Create a new repository**
-1. Select an owner and name for your new repository
-1. Click **Create repository**
-1. Clone your new repository
+The agent performs **3 sequential review passes** within a single OpenCode
+session, each building on the previous one:
 
-> [!IMPORTANT]
->
-> Make sure to remove or update the [`CODEOWNERS`](./CODEOWNERS) file! For
-> details on how to use this file, see
-> [About code owners](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners).
+1. **Pass 1: Atomic Diff Review**
+   - Line-by-line analysis of changes
+   - Syntax errors and typos
+   - Code style violations
+   - Local performance issues
 
-## Initial Setup
+2. **Pass 2: Structural/Layered Review**
+   - Broader codebase context analysis
+   - Function call chain tracing
+   - Interface contract verification
+   - Architectural impact assessment
+   - Pattern consistency checks
 
-After you've cloned the repository to your local machine or codespace, you'll
-need to perform some initial setup steps before you can develop your action.
+3. **Pass 3: Security & Compliance Audit**
+   - Access control issues
+   - Data integrity risks
+   - Project-specific rule enforcement (`AGENTS.md`)
+   - Security sensitivity scaling (PII, Financial data)
 
-> [!NOTE]
->
-> You'll need to have a reasonably modern version of
-> [Node.js](https://nodejs.org) handy (20.x or later should work!). If you are
-> using a version manager like [`nodenv`](https://github.com/nodenv/nodenv) or
-> [`fnm`](https://github.com/Schniz/fnm), this template has a `.node-version`
-> file at the root of the repository that can be used to automatically switch to
-> the correct version when you `cd` into the repository. Additionally, this
-> `.node-version` file is used by GitHub Actions in any `actions/setup-node`
-> actions.
+### Intelligent Issue Scoring (1-10 Scale)
 
-1. :hammer_and_wrench: Install the dependencies
+Every issue is assigned a severity score based on a detailed rubric. Only issues
+at or above the configured threshold are reported.
 
-   ```bash
-   npm install
-   ```
+#### Level 1-2: Pure Nit-picks
 
-1. :building_construction: Package the TypeScript for distribution
+_Items with zero impact on execution, security, or reliability_
 
-   ```bash
-   npm run bundle
-   ```
+- **Score 1 (Micro-Nit)**: Extremely subjective preferences
+  - Example: Suggesting `Array.from()` instead of spread operator where
+    performance is irrelevant
+  - Example: Preferring single quotes over double quotes when both are
+    acceptable
+- **Score 2 (Stylistic Nit)**: Minor inconsistencies not caught by linter but
+  don't hinder readability
+  - Example: Variable name `data` is generic, suggesting `userData` instead
+  - Example: Inconsistent spacing that doesn't affect code clarity
 
-1. :white_check_mark: Run the tests
+#### Level 3-4: Quality & Maintenance
 
-   ```bash
-   $ npm test
+_Items that impact developer experience and long-term health, but aren't bugs_
 
-   PASS  ./index.test.js
-     ✓ throws invalid number (3ms)
-     ✓ wait 500 ms (504ms)
-     ✓ test runs (95ms)
+- **Score 3 (Minor Improvement)**: Redundant code or slightly confusing naming
+  - Example: Function is 5 lines longer than necessary due to verbose if/else
+    block
+  - Example: Variable could be more descriptive but meaning is still clear from
+    context
+- **Score 4 (Readability/Documentation)**: Missing documentation on complex
+  public method or hard-to-parse exported type
+  - Example: Complex regex without explanation of what each group captures
+  - Example: Public API method missing JSDoc explaining parameters and return
+    value
 
-   ...
-   ```
+#### Level 5-6: Best Practices & Efficiency
 
-## Update the Action Metadata
+_The default threshold - deviations from industry standards or suboptimal
+patterns_
 
-The [`action.yml`](action.yml) file defines metadata about your action, such as
-input(s) and output(s). For details about this file, see
-[Metadata syntax for GitHub Actions](https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions).
+- **Score 5 (Suboptimal Pattern)**: Pattern that works but is known to be
+  brittle
+  - Example: Passing 6 individual arguments instead of an options object
+  - Example: Using string concatenation instead of template literals for
+    readability
+- **Score 6 (Local Performance/Complexity)**: Unnecessarily heavy code
+  - Example: Mapping over a large array twice instead of once
+  - Example: Nested loop that could be replaced with a Map lookup
+  - Example: Synchronous file operations in a critical path
 
-When you copy this repository, update `action.yml` with the name, description,
-inputs, and outputs for your action.
+#### Level 7-8: Logic, Edge Cases & Consistency
 
-## Update the Action Code
+_Serious issues where code might fail under specific conditions or violates
+rules_
 
-The [`src/`](./src/) directory is the heart of your action! This contains the
-source code that will be run when your action is invoked. You can replace the
-contents of this directory with your own code.
+- **Score 7 (Logic Risk)**: Missing edge case that could cause failures
+  - Example: Handling success and error states, but UI crashes on empty array
+    response
+  - Example: Not validating user input before using it in a calculation
+  - Example: Missing null check on optional API response field
+- **Score 8 (Structural/Rule Violation)**: Direct violation of AGENTS.md or
+  architectural standards
+  - Example: UI component performing direct database queries instead of using
+    service layer
+  - Example: Violating established module boundaries or import patterns
+  - Example: Breaking established error handling conventions
 
-There are a few things to keep in mind when writing your action code:
+#### Level 9-10: Critical Failures
 
-- Most GitHub Actions toolkit and CI/CD operations are processed asynchronously.
-  In `main.ts`, you will see that the action is run in an `async` function.
+_Issues requiring immediate PR blocking - objective and dangerous_
 
-  ```javascript
-  import * as core from '@actions/core'
-  //...
+- **Score 9 (Major Bug/Security Leak)**: High probability of failure or data
+  exposure
+  - Example: SQL injection vulnerability due to unsanitized user input
+  - Example: Missing authorization check on sensitive endpoint
+  - Example: Race condition in payment processing flow
+  - Example: Password or token exposed in logs
+- **Score 10 (Systemic Catastrophe)**: Fundamental failures with severe
+  consequences
+  - Example: Hardcoded production secrets or API keys committed to repository
+  - Example: Using broken/deprecated encryption (MD5 for passwords)
+  - Example: Logic that could cause mass data loss or corruption
+  - Example: Removing critical security middleware or authentication checks
 
-  async function run() {
-    try {
-      //...
-    } catch (error) {
-      core.setFailed(error.message)
-    }
-  }
-  ```
+### Configurable Thresholds
 
-  For more information about the GitHub Actions toolkit, see the
-  [documentation](https://github.com/actions/toolkit/blob/main/README.md).
+- **`problem_score_threshold`** (default: 5): Minimum score for reporting issues
+  - Set to 7 to focus only on logic errors and security issues
+  - Set to 3 to include code quality suggestions
+  - Agent remains silent on issues below threshold
 
-So, what are you waiting for? Go ahead and start customizing your action!
+- **`blocking_score_threshold`** (default: same as problem_score_threshold):
+  Minimum score to fail the check
+  - Separate threshold for CI/CD blocking
+  - Issues at or above this score will cause the action to fail
 
-1. Create a new branch
+### Stateful Review Management
 
-   ```bash
-   git checkout -b releases/v1
-   ```
+The agent maintains review state across commits by storing structured data
+directly in GitHub PR comments:
 
-1. Replace the contents of `src/` with your action code
-1. Add tests to `__tests__/` for your source code
-1. Format, test, and build the action
+- **Comment-Based State Storage**: All review state is embedded in comments
+  using `rmcoc` code blocks
+- **Automatic State Reconstruction**: On each run, the agent rebuilds complete
+  state by parsing previous review comments
+- **Issue Tracking**: Remembers which issues were raised, resolved, disputed, or
+  escalated
+- **Fix Verification**: Automatically checks if previous issues are addressed in
+  new commits
+- **Cross-File Resolution**: Detects when an issue in `file_A.ts` is fixed by
+  changes in `file_B.ts`
+- **No External Dependencies**: State persists as long as PR comments exist
 
-   ```bash
-   npm run all
-   ```
+#### Comment Format with Embedded State
 
-   > This step is important! It will run [`rollup`](https://rollupjs.org/) to
-   > build the final JavaScript action code with all dependencies included. If
-   > you do not run this step, your action will not work correctly when it is
-   > used in a workflow.
+Every review comment includes a `rmcoc` JSON block containing structured
+assessment data:
 
-1. (Optional) Test your action locally
+````markdown
+In `src/utils/auth.ts`, the `validateToken` function doesn't handle expired
+tokens.
 
-   The [`@github/local-action`](https://github.com/github/local-action) utility
-   can be used to test your action locally. It is a simple command-line tool
-   that "stubs" (or simulates) the GitHub Actions Toolkit. This way, you can run
-   your TypeScript action locally without having to commit and push your changes
-   to a repository.
+Add expiration validation before signature check to prevent accepting expired
+tokens.
 
-   The `local-action` utility can be run in the following ways:
-   - Visual Studio Code Debugger
+---
 
-     Make sure to review and, if needed, update
-     [`.vscode/launch.json`](./.vscode/launch.json)
+```rmcoc
+{
+  "finding": "Missing token expiration check",
+  "assessment": "Expired tokens could be accepted, creating security vulnerability",
+  "score": 9
+}
+```
+````
 
-   - Terminal/Command Prompt
+The agent parses these blocks to reconstruct:
 
-     ```bash
-     # npx @github/local action <action-yaml-path> <entrypoint> <dotenv-file>
-     npx @github/local-action . src/main.ts .env
-     ```
+- Thread status (PENDING, RESOLVED, DISPUTED, ESCALATED)
+- Issue severity scores
+- Original findings and assessments
+- Developer replies and dispute history
 
-   You can provide a `.env` file to the `local-action` CLI to set environment
-   variables used by the GitHub Actions Toolkit. For example, setting inputs and
-   event payload data used by your action. For more information, see the example
-   file, [`.env.example`](./.env.example), and the
-   [GitHub Actions Documentation](https://docs.github.com/en/actions/learn-github-actions/variables#default-environment-variables).
+### Intelligent Dispute Resolution
 
-1. Commit your changes
+The agent engages in technical discussions with developers:
 
-   ```bash
-   git add .
-   git commit -m "My first action is ready!"
-   ```
+- **Developer Acknowledgment**: Resolves threads when developer commits to
+  fixing
+- **Developer Disputes**: Re-examines code with developer's context, concedes
+  when wrong
+- **Out-of-Scope Requests**: Evaluates risk of deferring fixes based on severity
+- **Questions**: Provides detailed clarifications with code references
+- **Human Escalation**: Optional escalation to human reviewers for unresolved
+  disputes (requires `enable_human_escalation: true`)
 
-1. Push them to your repository
+### Security-First Approach
 
-   ```bash
-   git push -u origin releases/v1
-   ```
+- **Contextual Sensitivity**: Automatically elevates security issue scores by +2
+  points for repositories handling PII or Financial data
+- **Prompt Injection Protection**: Built-in detection for malicious instructions
+  in code comments or developer responses
+- **Access Control**: Read-only workspace access with no file modification
+  capabilities
+- **Security Pass**: Dedicated security audit in Pass 3 focusing on:
+  - Cross-user data leakage
+  - Unauthorized access risks
+  - Encryption and data integrity
+  - Authentication/authorization issues
 
-1. Create a pull request and get feedback on your action
-1. Merge the pull request into the `main` branch
+### On-Demand Review Trigger
 
-Your action is now published! :rocket:
+Developers can trigger a review on draft PRs by mentioning `@review-my-code-bot`
+in a PR comment:
 
-For information about versioning your action, see
-[Versioning](https://github.com/actions/toolkit/blob/main/docs/action-versioning.md)
-in the GitHub Actions toolkit.
-
-## Validate the Action
-
-You can now validate the action by referencing it in a workflow file. For
-example, [`ci.yml`](./.github/workflows/ci.yml) demonstrates how to reference an
-action in the same repository.
-
-```yaml
-steps:
-  - name: Checkout
-    id: checkout
-    uses: actions/checkout@v4
-
-  - name: Test Local Action
-    id: test-action
-    uses: ./
-    with:
-      milliseconds: 1000
-
-  - name: Print Output
-    id: output
-    run: echo "${{ steps.test-action.outputs.time }}"
+```
+@review-my-code-bot please review this PR
 ```
 
-For example workflow runs, check out the
-[Actions tab](https://github.com/actions/typescript-action/actions)! :rocket:
+This bypasses the normal "Ready for Review" trigger and runs the full 3-pass
+review process even on draft PRs, useful for getting early feedback before
+marking a PR as ready.
+
+### Developer-Friendly Comments
+
+All comments are formatted for easy integration with coding agents:
+
+- **File paths included**: `src/utils/auth.ts` at the start of suggestions
+- **Self-contained**: Full context without needing to read the PR
+- **Concrete instructions**: Exactly what to change, not just what's wrong
+- **Code examples**: Markdown code blocks showing problematic and correct
+  approaches
+- **No committable suggestions**: Only provides guidance, never creates
+  auto-commit blocks
+
+### Review Philosophy
+
+The agent follows strict "Value-Add" principles:
+
+- **Proportionality**: Suggestions match the scale of changes (no module
+  rewrites for 2-line fixes)
+- **Non-Obligatory Feedback**: If code is good, the agent says nothing (silence
+  over noise)
+- **Intellectual Honesty**: Concedes when developers provide valid
+  counter-arguments
+- **Contextual Awareness**: Reviews code holistically, not just diffs
 
 ## Usage
 
-After testing, you can create version tag(s) that developers can use to
-reference different stable versions of your action. For more information, see
-[Versioning](https://github.com/actions/toolkit/blob/main/docs/action-versioning.md)
-in the GitHub Actions toolkit.
-
-To include the action in a workflow in another repository, you can use the
-`uses` syntax with the `@` symbol to reference a specific branch, tag, or commit
-hash.
+### Basic Setup
 
 ```yaml
-steps:
-  - name: Checkout
-    id: checkout
-    uses: actions/checkout@v4
+name: Code Review
 
-  - name: Test Local Action
-    id: test-action
-    uses: actions/typescript-action@v1 # Commit with the `v1` tag
-    with:
-      milliseconds: 1000
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
 
-  - name: Print Output
-    id: output
-    run: echo "${{ steps.test-action.outputs.time }}"
+jobs:
+  review:
+    runs-on: ubuntu-latest
+
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run OpenCode PR Reviewer
+        uses: your-org/opencode-pr-reviewer@v1
+        with:
+          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-## Publishing a New Release
+### Advanced Configuration
 
-This project includes a helper script, [`script/release`](./script/release)
-designed to streamline the process of tagging and pushing new releases for
-GitHub Actions.
+```yaml
+- name: Run OpenCode PR Reviewer
+  uses: your-org/opencode-pr-reviewer@v1
+  with:
+    # Required
+    openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
 
-GitHub Actions allows users to select a specific version of the action to use,
-based on release tags. This script simplifies this process by performing the
-following steps:
+    # Model Selection
+    model: 'anthropic/claude-sonnet-4-20250514' # Default
 
-1. **Retrieving the latest release tag:** The script starts by fetching the most
-   recent SemVer release tag of the current branch, by looking at the local data
-   available in your repository.
-1. **Prompting for a new release tag:** The user is then prompted to enter a new
-   release tag. To assist with this, the script displays the tag retrieved in
-   the previous step, and validates the format of the inputted tag (vX.X.X). The
-   user is also reminded to update the version field in package.json.
-1. **Tagging the new release:** The script then tags a new release and syncs the
-   separate major tag (e.g. v1, v2) with the new release tag (e.g. v1.0.0,
-   v2.1.2). When the user is creating a new major release, the script
-   auto-detects this and creates a `releases/v#` branch for the previous major
-   version.
-1. **Pushing changes to remote:** Finally, the script pushes the necessary
-   commits, tags and branches to the remote repository. From here, you will need
-   to create a new release in GitHub so users can easily reference the new tags
-   in their workflows.
+    # Threshold Configuration
+    problem_score_threshold: '7' # Only report serious issues
+    blocking_score_threshold: '9' # Only block on critical issues
 
-## Dependency License Management
+    # Timeout & Retries
+    review_timeout_minutes: '40' # Default: 40 minutes
+    max_review_retries: '1' # Default: 1 retry on timeout
 
-This template includes a GitHub Actions workflow,
-[`licensed.yml`](./.github/workflows/licensed.yml), that uses
-[Licensed](https://github.com/licensee/licensed) to check for dependencies with
-missing or non-compliant licenses. This workflow is initially disabled. To
-enable the workflow, follow the below steps.
+    # Optional Features
+    enable_web: 'true' # Enable web search for documentation
+    debug_logging: 'true' # Verbose LLM activity logging
 
-1. Open [`licensed.yml`](./.github/workflows/licensed.yml)
-1. Uncomment the following lines:
+    # Human Escalation
+    enable_human_escalation: 'true'
+    human_reviewers: 'alice,bob' # GitHub usernames to tag
 
-   ```yaml
-   # pull_request:
-   #   branches:
-   #     - main
-   # push:
-   #   branches:
-   #     - main
-   ```
+    # Security
+    injection_detection_enabled: 'true' # Default
+    injection_verification_model: 'openai/gpt-4o-mini'
+```
 
-1. Save and commit the changes
+### With On-Demand Review Trigger
 
-Once complete, this workflow will run any time a pull request is created or
-changes pushed directly to `main`. If the workflow detects any dependencies with
-missing or non-compliant licenses, it will fail the workflow and provide details
-on the issue(s) found.
+Add `issue_comment` trigger to enable on-demand reviews via
+`@review-my-code-bot` mentions:
 
-### Updating Licenses
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created]
 
-Whenever you install or update dependencies, you can use the Licensed CLI to
-update the licenses database. To install Licensed, see the project's
-[Readme](https://github.com/licensee/licensed?tab=readme-ov-file#installation).
+jobs:
+  review:
+    if: |
+      github.event_name == 'pull_request' || 
+      (github.event_name == 'issue_comment' && 
+       github.event.issue.pull_request && 
+       contains(github.event.comment.body, '@review-my-code-bot'))
 
-To update the cached licenses, run the following command:
+    runs-on: ubuntu-latest
+
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout PR head for comment events
+        if: github.event_name == 'issue_comment'
+        run: gh pr checkout ${{ github.event.issue.number }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run OpenCode PR Reviewer
+        uses: your-org/opencode-pr-reviewer@v1
+        with:
+          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+## Inputs
+
+| Input                          | Description                                                                  | Required | Default                              |
+| ------------------------------ | ---------------------------------------------------------------------------- | -------- | ------------------------------------ |
+| `openrouter_api_key`           | OpenRouter API key for LLM access                                            | Yes      | -                                    |
+| `github_token`                 | GitHub token for API access. Use PAT with repo scope to auto-resolve threads | Yes      | `${{ github.token }}`                |
+| `model`                        | LLM model via OpenRouter                                                     | No       | `anthropic/claude-sonnet-4-20250514` |
+| `problem_score_threshold`      | Minimum score (1-10) for reporting issues                                    | No       | `5`                                  |
+| `blocking_score_threshold`     | Minimum score (1-10) to fail the check                                       | No       | Same as problem_score_threshold      |
+| `review_timeout_minutes`       | Total timeout for review in minutes (5-120)                                  | No       | `40`                                 |
+| `max_review_retries`           | Maximum retry attempts on timeout (0-3)                                      | No       | `1`                                  |
+| `enable_web`                   | Enable web search and fetch capabilities                                     | No       | `false`                              |
+| `enable_human_escalation`      | Enable escalation to human reviewers                                         | No       | `false`                              |
+| `human_reviewers`              | Comma-separated GitHub usernames for escalation                              | No       | `''`                                 |
+| `debug_logging`                | Enable verbose debug logging                                                 | No       | `false`                              |
+| `injection_detection_enabled`  | Enable prompt injection detection                                            | No       | `true`                               |
+| `injection_verification_model` | Model for LLM-based injection verification                                   | No       | `openai/gpt-4o-mini`                 |
+
+## Outputs
+
+| Output            | Description                                                   |
+| ----------------- | ------------------------------------------------------------- |
+| `review_status`   | Status: `completed`, `failed`, or `has_blocking_issues`       |
+| `issues_found`    | Number of issues found and reported                           |
+| `blocking_issues` | Number of blocking issues (score >= blocking_score_threshold) |
+
+## Project-Specific Rules
+
+The agent automatically enforces rules defined in your repository's `AGENTS.md`
+file:
+
+- **Pass 1**: Code style, naming conventions, formatting standards
+- **Pass 2**: Architectural rules, module boundaries, import patterns
+- **Pass 3**: Security requirements, data handling policies, testing
+  requirements
+
+See [AGENTS.md](./AGENTS.md) for this repository's development contract.
+
+## How It Works
+
+### Review Flow
+
+1. **State Reconstruction**: Rebuilds review state by parsing all PR review
+   comments containing `rmcoc` blocks
+2. **Dispute Resolution**: Evaluates developer responses to previous comments
+3. **Fix Verification**: Checks if previous issues are addressed in new commits
+4. **Multi-Pass Review**: Executes 3 sequential review passes
+5. **State Persistence**: State is automatically persisted in review comments
+   with `rmcoc` blocks
+
+### State Management
+
+State is stored and retrieved entirely through GitHub PR review comments using
+structured `rmcoc` code blocks:
+
+#### State Reconstruction Process
+
+1. **Fetch All Review Comments**: Agent retrieves all review comments from the
+   current PR
+2. **Identify Bot Comments**: Filters for comments posted by
+   `github-actions[bot]`
+3. **Parse rmcoc Blocks**: Extracts JSON assessment data from each comment's
+   `rmcoc` code block
+4. **Build Thread State**: Reconstructs thread status by analyzing comment
+   replies:
+   - **PENDING**: No bot replies yet, or discussion ongoing
+   - **RESOLVED**: Bot posted reply with `✅ **Issue Resolved**` marker or
+     `rmcoc` block with `status: "RESOLVED"`
+   - **DISPUTED**: Bot replied without conceding (maintains position)
+   - **ESCALATED**: Bot posted `🔺 **Escalated to Human Review**` marker or
+     `rmcoc` block with `status: "ESCALATED"`
+5. **Collect Developer Replies**: Gathers all non-bot replies to track dispute
+   history
+
+#### rmcoc Block Structure
+
+Every review comment includes:
+
+```json
+{
+  "finding": "Brief one-sentence description of the issue",
+  "assessment": "Detailed analysis of why this matters and the impact",
+  "score": 7
+}
+```
+
+Resolution and escalation replies may include:
+
+```json
+{
+  "status": "RESOLVED",
+  "reason": "Developer fixed the issue in commit abc123"
+}
+```
+
+#### Deduplication Logic
+
+The agent prevents duplicate comments on the same issue by:
+
+- Comparing file path and line number
+- Using fuzzy matching on finding text (50% word overlap threshold using
+  significant words)
+- Skipping comments for issues already reported and unresolved
+- Filtering out common stop words to improve matching accuracy
+
+### Security Sensitivity Detection
+
+The agent automatically detects sensitive data handling by analyzing:
+
+- **Dependencies**: Checks for `stripe`, `payment`, `passport`, `auth`, `jwt`,
+  `encrypt`, `crypto`
+- **README**: Looks for mentions of `PII`, `GDPR`, `HIPAA`, `financial`,
+  `banking`, `healthcare`
+
+When detected, security findings are automatically elevated by +2 points.
+
+## Development
+
+### Setup
 
 ```bash
-licensed cache
+pnpm install
+pnpm run bundle
+pnpm test
 ```
 
-To check the status of cached licenses, run the following command:
+### Local Testing
 
 ```bash
-licensed status
+pnpx @github/local-action . src/main.ts .env
 ```
+
+See [.env.example](./.env.example) for required environment variables.
+
+### Project Structure
+
+- `src/main.ts`: Action entry point
+- `src/review/orchestrator.ts`: Multi-pass review orchestration
+- `src/review/prompts.ts`: LLM prompts and scoring rubric
+- `src/github/state.ts`: Review state management
+- `src/opencode/server.ts`: OpenCode server lifecycle
+- `src/trpc/router.ts`: Tool implementations for agent
+
+## License
+
+MIT
+
+## Contributing
+
+Contributions welcome! Please ensure:
+
+1. All code passes linting: `pnpm run lint`
+2. Tests pass: `pnpm test`
+3. Code is bundled: `pnpm run bundle`
+4. No dead code or unused exports
+5. Follow [AGENTS.md](./AGENTS.md) development contract
+
+## Support
+
+For issues or questions:
+
+- GitHub Issues: Report bugs or request features

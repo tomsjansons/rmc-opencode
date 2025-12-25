@@ -122,18 +122,21 @@ dangerous._
 
 ### 3.2. Automated State Management
 
-The agent will receive Additional state saved in Github Cache as it's context.
-This state will be gahtared outside of the agent as a side effect of the agent
-calling the "comment" tool. This state will be saved in Github Cache and will be
-available for the agent though a "run state" tool to be incorporated in
-subsequent reviews. The "run state" tool should combine the previous state from
-cache with any developer comments/replies to offer a full picture of the current
-review state.
+The agent maintains review state entirely through GitHub PR review comments
+using structured `rmcoc` code blocks. State is automatically reconstructed on
+each run by parsing previous review comments - there is no reliance on GitHub
+Actions Cache which has proven unreliable.
 
-If the cached state is evicted from the cache, it must be rebuilt by crawling
-the github commnets. This should be part of the "run state" tool.
+The "run state" tool reconstructs the complete review state by:
 
-This state will help with the following
+1. Fetching all PR review comments via GitHub API
+2. Filtering for bot-authored comments (`opencode-reviewer[bot]`,
+   `github-actions[bot]`)
+3. Extracting `rmcoc` JSON blocks from each comment
+4. Building thread state by analyzing comment replies and status markers
+5. Collecting developer replies to track dispute history
+
+This state helps with the following
 
 - **Issue Tracking:** Which issues were raised and which are "Resolved,"
   "Pending," or "Disputed."
@@ -203,24 +206,21 @@ state.
 
 ##### Comment Format Requirements for State Reconstruction
 
-All review comments posted by the agent **MUST** include an embedded JSON
-assessment block to enable state reconstruction from GitHub comments when the
-cache is evicted. The comment format is:
+All review comments posted by the agent **MUST** include an embedded `rmcoc`
+JSON code block to enable state reconstruction. The comment format is:
 
 ````markdown
 [Human-readable explanation of the issue]
 
-```json
+---
+
+```rmcoc
 {
   "finding": "Brief description of what was found",
   "assessment": "Detailed analysis of why this is an issue",
   "score": 7
 }
 ```
-````
-
-[Optional: Additional context, examples, or suggestions]
-
 ````
 
 **JSON Schema Requirements:**
@@ -233,33 +233,43 @@ cache is evicted. The comment format is:
 
 **State Reconstruction Behavior:**
 
-When the GitHub Actions cache is evicted or unavailable, the state manager will:
+On every run, the state manager:
 
-1. Fetch all PR review comments via GitHub API
-2. Parse each comment to extract the JSON assessment block
-3. Reconstruct the review state with:
+1. Fetches all PR review comments via GitHub API
+2. Parses each bot comment to extract the `rmcoc` JSON block
+3. Reconstructs the review state with:
    - Thread ID from comment ID
    - File path and line number from comment metadata
-   - Assessment data from the JSON block
-   - Status set to 'PENDING' (reconciliation happens during re-review)
-4. Save the reconstructed state to cache
+   - Assessment data from the `rmcoc` block
+   - Status determined by analyzing bot replies:
+     - **PENDING**: No bot replies or discussion ongoing
+     - **RESOLVED**: Bot posted `✅ **Issue Resolved**` or `rmcoc` block with
+       `status: "RESOLVED"`
+     - **DISPUTED**: Bot replied without conceding (maintains position)
+     - **ESCALATED**: Bot posted `🔺 **Escalated to Human Review**` or `rmcoc`
+       block with `status: "ESCALATED"`
+4. Collects all developer replies to track dispute history
 
 **Fallback Handling:**
 
-If a comment lacks a valid JSON assessment block:
+If a comment lacks a valid `rmcoc` block:
 
-- `finding`: Defaults to "Unknown issue"
-- `assessment`: Uses first 200 characters of comment body
-- `score`: Defaults to 5 (medium severity)
+- Comment is ignored and not included in state reconstruction
+- Only bot comments with valid `rmcoc` blocks are considered review findings
 
-Comments with default score (5) or missing findings are excluded from
-reconstructed state as they're likely not agent-generated review comments.
+**Deduplication:**
+
+The agent prevents duplicate comments using:
+
+- File path and line number matching
+- Fuzzy matching on finding text (50% significant word overlap threshold)
+- Stop word filtering to improve matching accuracy
 
 ##### `github_get_run_state()`
 
-- **Responsibility**: Retrieves the current review state from the GitHub Cache
-  or reconstructs it from existing comment threads. It identifies which issues
-  are "Pending," "Resolved," or "Disputed."
+- **Responsibility**: Reconstructs the current review state from existing
+  comment threads by parsing `rmcoc` blocks. It identifies which issues are
+  "Pending," "Resolved," "Disputed," or "Escalated."
 - **Signature**:
   ```ts
   github_get_run_state(): Promise<{
@@ -267,19 +277,27 @@ reconstructed state as they're likely not agent-generated review comments.
       id: string,
       file: string,
       line: number,
-      status: 'PENDING' | 'RESOLVED' | 'DISPUTED',
-      history: Array<{author: string, body: string}>
+      status: 'PENDING' | 'RESOLVED' | 'DISPUTED' | 'ESCALATED',
+      score: number,
+      assessment: {
+        finding: string,
+        assessment: string,
+        score: number
+      },
+      developer_replies?: Array<{author: string, body: string, timestamp: string}>
     }>,
     metadata: Record<string, any>
   }>
+  ```
+
 ````
 
 ##### `github_post_review_comment()`
 
 - **Responsibility**: Posts a new review comment on a specific file and line.
-  The tool automatically embeds the assessment data as a JSON code block within
-  the comment body to enable state reconstruction. The tool logic will filter
-  the comment (not post it) if the `score` is below the user-defined
+  The tool automatically embeds the assessment data as an `rmcoc` code block
+  within the comment body to enable state reconstruction. The tool logic will
+  filter the comment (not post it) if the `score` is below the user-defined
   `problem_score_threshold`.
 - **Signature**:
   ```ts
@@ -295,8 +313,10 @@ reconstructed state as they're likely not agent-generated review comments.
   ): Promise<string> // Returns thread_id
   ```
 - **Implementation Note**: The tool combines `body` and `assessment` into a
-  formatted comment with embedded JSON block before posting to GitHub. The agent
-  only provides the human-readable body and structured assessment data.
+  formatted comment with embedded `rmcoc` block (using `---` separator) before
+  posting to GitHub. The agent only provides the human-readable body and
+  structured assessment data. The tool also checks for duplicate findings at the
+  same location using fuzzy matching to prevent redundant comments.
 
 ##### `github_reply_to_thread()`
 
@@ -356,12 +376,12 @@ Used for validating best practices against external documentation.
 
 ### Tool Responsibility Summary Table
 
-| Tool Category     | Core Responsibility         | Side Effect                             |
-| :---------------- | :-------------------------- | :-------------------------------------- |
-| **State**         | Load/Rebuild PR context     | Synchronizes local memory with GH Cache |
-| **Communication** | Post/Reply/Resolve comments | Filters via `problem_score_threshold`   |
-| **Exploration**   | Read-only file access       | None (Read-only for security)           |
-| **Workflow**      | Sequence the 4-pass review  | Updates progress in the Action log      |
+| Tool Category     | Core Responsibility         | Side Effect                                            |
+| :---------------- | :-------------------------- | :----------------------------------------------------- |
+| **State**         | Load/Rebuild PR context     | Parses `rmcoc` blocks from GitHub comments             |
+| **Communication** | Post/Reply/Resolve comments | Filters via `problem_score_threshold`, embeds `rmcoc`  |
+| **Exploration**   | Read-only file access       | None (Read-only for security)                          |
+| **Workflow**      | Sequence the 3-pass review  | Updates progress in the Action log                     |
 
 ### Implementation Note on "Pseudo-Commitable Suggestions"
 
@@ -384,10 +404,12 @@ modifying the codebase without manual oversight.
 
 ### Phase 2: State & Context Service
 
-1.  **Cache Logic:** Implement logic using `@actions/cache` to pull the
-    `review_state.json` based on the PR number.
+1.  **Comment Parsing Logic:** Implement state reconstruction by fetching and
+    parsing all PR review comments to extract `rmcoc` blocks.
 2.  **Context Aggregator:** Build a service to collect the PR diff, the
     `AGENTS.md` file, and current thread history from the GitHub API.
+3.  **Deduplication Service:** Implement fuzzy matching on findings to prevent
+    duplicate comments on the same issue.
 
 ### Phase 3: The Multi-Pass Review Logic
 
@@ -484,7 +506,12 @@ with:
 
 ## 8. Additional details
 
-- **Triggering:** Only runs on "Ready for Review" or new pushes to active PRs.
+- **Triggering:** Runs on:
+  - "Ready for Review" or new pushes to active PRs
+  - When a developer mentions `@review-my-code-bot` in a comment (triggers
+    review even on draft PRs)
 - **Isolation:** OpenCode runs on the runner but is abstracted for future
   containerization.
-- **Memory:** State is preserved across commits to track issue resolution.
+- **Memory:** State is preserved in GitHub PR comments via `rmcoc` blocks,
+  reconstructed on each run to track issue resolution.
+````
