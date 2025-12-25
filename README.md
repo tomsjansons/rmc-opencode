@@ -1,8 +1,9 @@
 # Review My Code, OpenCode!
 
-A GitHub Action that uses OpenCode to do LLM-powered code reviews. I've tried
-the reivew process to behave like a real developer review. No silly diagrams and
-other nonsense.
+A GitHub Action that uses OpenCode to do LLM-powered code reviews. The reivew process should behave like a real developer review. No silly diagrams and
+other nonsense. Ask follow up questions, argue in comments and fix what's broken!
+
+You can see it in action on this PR https://github.com/tomsjansons/rmc-oc/pull/8
 
 ## WIP
 
