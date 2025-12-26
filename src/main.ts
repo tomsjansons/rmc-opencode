@@ -87,11 +87,45 @@ ${answer}
     } else if (config.execution.mode === 'full-review') {
       logger.info('Execution mode: Full Review')
 
+      if (
+        config.execution.isManuallyTriggered &&
+        config.execution.manualTriggerComments.enableStartComment &&
+        config.execution.triggerCommentId
+      ) {
+        logger.info('Posting review start comment')
+        await github.replyToIssueComment(
+          config.execution.triggerCommentId,
+          "🤖 **Review started!**\n\nI'm analyzing your code now. This may take a few minutes..."
+        )
+      }
+
       const result = await orchestrator.executeReview()
 
       core.setOutput('review_status', result.status)
       core.setOutput('issues_found', String(result.issuesFound))
       core.setOutput('blocking_issues', String(result.blockingIssues))
+
+      if (
+        config.execution.isManuallyTriggered &&
+        config.execution.manualTriggerComments.enableEndComment &&
+        config.execution.triggerCommentId
+      ) {
+        logger.info('Posting review end comment')
+        let endMessage = '✅ **Review completed!**\n\n'
+
+        if (result.issuesFound === 0) {
+          endMessage += 'No issues found. Great work! 🎉'
+        } else if (result.blockingIssues > 0) {
+          endMessage += `Found ${result.issuesFound} issue(s), including ${result.blockingIssues} blocking issue(s). Please address the review comments above.`
+        } else {
+          endMessage += `Found ${result.issuesFound} issue(s). Please review the comments above.`
+        }
+
+        await github.replyToIssueComment(
+          config.execution.triggerCommentId,
+          endMessage
+        )
+      }
 
       if (result.issuesFound > 0) {
         const message =

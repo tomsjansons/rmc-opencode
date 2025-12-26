@@ -77,6 +77,17 @@ inputs:
       as secondary check after pattern detection)'
     required: false
     default: 'openai/gpt-4o-mini'
+  review_manual_trigger_enable_start_comment:
+    description:
+      'Post a comment when a manually-triggered review starts (via bot mention)'
+    required: false
+    default: 'true'
+  review_manual_trigger_enable_end_comment:
+    description:
+      'Post a comment when a manually-triggered review completes (via bot
+      mention)'
+    required: false
+    default: 'true'
 
 # Define your outputs here.
 outputs:

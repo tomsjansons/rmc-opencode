@@ -80,6 +80,16 @@ export async function parseInputs(): Promise<ReviewConfig> {
     { required: true }
   )
 
+  const enableStartComment = core.getBooleanInput(
+    'review_manual_trigger_enable_start_comment',
+    { required: false }
+  )
+
+  const enableEndComment = core.getBooleanInput(
+    'review_manual_trigger_enable_end_comment',
+    { required: false }
+  )
+
   const context = github.context
 
   const tempLlmClient = new LLMClientImpl({
@@ -88,8 +98,14 @@ export async function parseInputs(): Promise<ReviewConfig> {
   })
   const intentClassifier = new IntentClassifier(tempLlmClient)
 
-  const { mode, prNumber, questionContext, disputeContext } =
-    await detectExecutionMode(context, intentClassifier)
+  const {
+    mode,
+    prNumber,
+    questionContext,
+    disputeContext,
+    isManuallyTriggered,
+    triggerCommentId
+  } = await detectExecutionMode(context, intentClassifier)
 
   const owner = context.repo.owner
   const repo = context.repo.repo
@@ -134,7 +150,13 @@ export async function parseInputs(): Promise<ReviewConfig> {
     execution: {
       mode,
       questionContext,
-      disputeContext
+      disputeContext,
+      isManuallyTriggered,
+      triggerCommentId,
+      manualTriggerComments: {
+        enableStartComment,
+        enableEndComment
+      }
     }
   }
 }
@@ -147,6 +169,8 @@ async function detectExecutionMode(
   prNumber: number
   questionContext?: QuestionContext
   disputeContext?: DisputeContext
+  isManuallyTriggered: boolean
+  triggerCommentId?: string
 }> {
   if (context.eventName === 'pull_request_review_comment') {
     const comment = context.payload.comment
@@ -182,6 +206,8 @@ async function detectExecutionMode(
     return {
       mode: 'dispute-resolution',
       prNumber: pullRequest.number,
+      isManuallyTriggered: true,
+      triggerCommentId: String(comment?.id || ''),
       disputeContext: {
         threadId: String(inReplyToId),
         replyCommentId: String(comment?.id || ''),
@@ -224,7 +250,9 @@ async function detectExecutionMode(
 
         return {
           mode: 'full-review',
-          prNumber: issue.number
+          prNumber: issue.number,
+          isManuallyTriggered: true,
+          triggerCommentId: String(comment?.id || '')
         }
       }
 
@@ -243,6 +271,8 @@ async function detectExecutionMode(
       return {
         mode: 'question-answering',
         prNumber: issue.number,
+        isManuallyTriggered: true,
+        triggerCommentId: String(comment?.id || ''),
         questionContext: {
           commentId: String(comment?.id || ''),
           question: textAfterMention,
@@ -284,7 +314,8 @@ async function detectExecutionMode(
 
     return {
       mode: 'full-review',
-      prNumber
+      prNumber,
+      isManuallyTriggered: false
     }
   }
 
