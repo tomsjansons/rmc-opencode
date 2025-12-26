@@ -49644,14 +49644,12 @@ ${answer}
         }
         else if (config.execution.mode === 'full-review') {
             logger.info('Execution mode: Full Review');
-            let originalCommentBody = '';
             if (config.execution.isManuallyTriggered &&
                 config.execution.triggerCommentId &&
                 config.execution.manualTriggerComments.enableStartComment) {
-                logger.info('Updating trigger comment with review start status');
-                originalCommentBody = await github.getIssueComment(config.execution.triggerCommentId);
-                const updatedBody = `${originalCommentBody}\n\n---\n\n🤖 **Review Status:** In Progress ⏳\n\n_I'm analyzing your code now. This may take a few minutes..._`;
-                await github.updateIssueComment(config.execution.triggerCommentId, updatedBody);
+                logger.info('Posting review start comment');
+                const startMessage = "🤖 **Review started!**\n\nI'm analyzing your code now. This may take a few minutes...";
+                await github.replyToIssueComment(config.execution.triggerCommentId, startMessage);
             }
             const result = await orchestrator.executeReview();
             coreExports.setOutput('review_status', result.status);
@@ -49660,19 +49658,18 @@ ${answer}
             if (config.execution.isManuallyTriggered &&
                 config.execution.triggerCommentId &&
                 config.execution.manualTriggerComments.enableEndComment) {
-                logger.info('Updating trigger comment with review end status');
-                let statusMessage = '✅ **Review Status:** Complete\n\n';
+                logger.info('Posting review end comment');
+                let endMessage = '✅ **Review completed!**\n\n';
                 if (result.issuesFound === 0) {
-                    statusMessage += 'No issues found. Great work! 🎉';
+                    endMessage += 'No issues found. Great work! 🎉';
                 }
                 else if (result.blockingIssues > 0) {
-                    statusMessage += `Found ${result.issuesFound} issue(s), including ${result.blockingIssues} blocking issue(s). ⚠️\n\nPlease address the review comments above before merging.`;
+                    endMessage += `Found ${result.issuesFound} issue(s), including ${result.blockingIssues} blocking issue(s). ⚠️\n\nPlease address the review comments above before merging.`;
                 }
                 else {
-                    statusMessage += `Found ${result.issuesFound} issue(s). Please review the comments above.`;
+                    endMessage += `Found ${result.issuesFound} issue(s). Please review the comments above.`;
                 }
-                const updatedBody = `${originalCommentBody}\n\n---\n\n${statusMessage}`;
-                await github.updateIssueComment(config.execution.triggerCommentId, updatedBody);
+                await github.replyToIssueComment(config.execution.triggerCommentId, endMessage);
             }
             if (result.issuesFound > 0) {
                 const message = result.blockingIssues > 0
