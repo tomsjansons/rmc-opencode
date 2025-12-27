@@ -27,7 +27,7 @@ export class ExecutionOrchestrator {
     private stateManager: StateManager,
     llmClient: LLMClient
   ) {
-    this.taskDetector = new TaskDetector(llmClient)
+    this.taskDetector = new TaskDetector(llmClient, stateManager)
   }
 
   async execute(): Promise<ExecutionResult> {
@@ -44,13 +44,17 @@ export class ExecutionOrchestrator {
           results: [],
           hasBlockingIssues: false,
           totalTasks: 0,
-          reviewCompleted: false
+          reviewCompleted: false,
+          hadAutoReview: false,
+          hadManualReview: false
         }
       }
 
       const results: TaskResult[] = []
       let hasBlockingIssues = false
       let reviewCompleted = false
+      let hadAutoReview = false
+      let hadManualReview = false
 
       for (const task of plan.tasks) {
         const result = await this.executeTask(task)
@@ -62,6 +66,13 @@ export class ExecutionOrchestrator {
 
         if (task.type === 'full-review' && result.success) {
           reviewCompleted = true
+          // Use affectsMergeGate to determine if this was an auto review
+          // This handles both fresh auto reviews and resumed cancelled ones
+          if (task.affectsMergeGate) {
+            hadAutoReview = true
+          } else {
+            hadManualReview = true
+          }
         }
       }
 
@@ -69,7 +80,9 @@ export class ExecutionOrchestrator {
         results,
         hasBlockingIssues,
         totalTasks: results.length,
-        reviewCompleted
+        reviewCompleted,
+        hadAutoReview,
+        hadManualReview
       }
     })
   }
@@ -151,7 +164,11 @@ export class ExecutionOrchestrator {
             task.questionContext.commentId
           )
 
-          await this.reviewOrchestrator.executeQuestionAnswering()
+          // Pass the question context and conversation history to the orchestrator
+          await this.reviewOrchestrator.executeQuestionAnswering(
+            task.questionContext,
+            task.conversationHistory
+          )
 
           await this.stateManager.markQuestionAnswered(
             task.questionContext.commentId

@@ -92,9 +92,17 @@ export async function run(): Promise<void> {
       core.setOutput('blocking_issues', String(totalBlockingIssues))
 
       if (executionResult.hasBlockingIssues) {
-        const message = `Review found ${totalIssuesFound} issue(s), including ${totalBlockingIssues} blocking issue(s). Please address the review comments before merging.`
-        core.setFailed(message)
-        exitCode = 1
+        // Only fail the action (set exit code 1) for AUTO reviews
+        // Manual reviews are informational only - they don't block merges
+        if (executionResult.hadAutoReview) {
+          const message = `Review found ${totalIssuesFound} issue(s), including ${totalBlockingIssues} blocking issue(s). Please address the review comments before merging.`
+          core.setFailed(message)
+          exitCode = 1
+        } else if (executionResult.hadManualReview) {
+          // Manual review with blocking issues - don't fail, just warn
+          const message = `Manual review found ${totalIssuesFound} issue(s), including ${totalBlockingIssues} blocking issue(s). (Not failing action - manual reviews are informational only)`
+          core.warning(message)
+        }
       } else if (totalIssuesFound > 0) {
         const message = `Review found ${totalIssuesFound} issue(s). Please review the comments.`
         core.warning(message)

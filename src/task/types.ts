@@ -94,6 +94,12 @@ export type ReviewTask = {
   triggeredBy: 'opened' | 'synchronize' | 'ready_for_review' | 'manual-request'
   /** Whether this is resuming a cancelled auto review */
   resumingCancelled?: boolean
+  /**
+   * Whether this should affect the merge gate (exit code).
+   * True for auto reviews and resumed auto reviews.
+   * False for manual reviews (informational only).
+   */
+  affectsMergeGate: boolean
 }
 
 /**
@@ -139,4 +145,8 @@ export type ExecutionResult = {
   totalTasks: number
   /** Whether a review was completed */
   reviewCompleted: boolean
+  /** Whether an auto review (PR event triggered) was executed */
+  hadAutoReview: boolean
+  /** Whether a manual review (@ mention triggered) was executed */
+  hadManualReview: boolean
 }

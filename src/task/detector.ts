@@ -10,7 +10,7 @@
 import type { GitHubAPI } from '../github/api.js'
 import type { LLMClient } from '../opencode/llm-client.js'
 import type { ReviewConfig } from '../review/types.js'
-import type { ProcessState } from '../state/types.js'
+import type { StateManager } from '../state/manager.js'
 import { extractRmcocBlock, type RmcocBlock } from '../state/serializer.js'
 import { logger } from '../utils/logger.js'
 import { IntentClassifier } from './classifier.js'
@@ -28,7 +28,10 @@ import type {
 export class TaskDetector {
   private intentClassifier: IntentClassifier
 
-  constructor(llmClient: LLMClient) {
+  constructor(
+    llmClient: LLMClient,
+    private stateManager: StateManager
+  ) {
     this.intentClassifier = new IntentClassifier(llmClient)
   }
 
@@ -52,24 +55,24 @@ export class TaskDetector {
 
     logger.info('Detecting all pending tasks...')
 
-    const emptyState: ProcessState = {
-      reviewThreads: [],
-      questionTasks: [],
-      manualReviewRequests: [],
-      metadata: {
-        lastUpdated: new Date().toISOString(),
-        prNumber: config.github.prNumber,
-        passesCompleted: []
-      }
-    }
+    // Get the real state from StateManager - this contains review threads with disputes
+    const reviewState = await this.stateManager.getOrCreateState()
+
+    // Convert ReviewState threads to the format expected by detectPendingDisputes
+    const reviewThreads = reviewState.threads.map((thread) => ({
+      id: thread.id,
+      file: thread.file,
+      line: thread.line,
+      status: thread.status
+    }))
 
     // Always check for disputes (priority 1)
-    const disputes = await this.detectPendingDisputes(githubApi, emptyState)
+    const disputes = await this.detectPendingDisputes(githubApi, reviewThreads)
     tasks.push(...disputes)
     logger.info(`Found ${disputes.length} pending dispute(s)`)
 
     // Always check for questions (priority 2)
-    const questions = await this.detectPendingQuestions(githubApi, emptyState)
+    const questions = await this.detectPendingQuestions(githubApi)
     tasks.push(...questions)
     logger.info(`Found ${questions.length} pending question(s)`)
 
@@ -99,12 +102,17 @@ export class TaskDetector {
    */
   private async detectPendingDisputes(
     githubApi: GitHubAPI,
-    state: ProcessState
+    reviewThreads: Array<{
+      id: string
+      file: string
+      line: number
+      status: 'PENDING' | 'RESOLVED' | 'DISPUTED' | 'ESCALATED'
+    }>
   ): Promise<DisputeTask[]> {
     const disputes: DisputeTask[] = []
 
     // Get all review threads with PENDING or DISPUTED status
-    const activeThreads = state.reviewThreads.filter(
+    const activeThreads = reviewThreads.filter(
       (t) => t.status === 'PENDING' || t.status === 'DISPUTED'
     )
 
@@ -154,8 +162,7 @@ export class TaskDetector {
    * Uses rmcoc blocks to track answered questions
    */
   private async detectPendingQuestions(
-    githubApi: GitHubAPI,
-    _state: ProcessState
+    githubApi: GitHubAPI
   ): Promise<QuestionTask[]> {
     const questions: QuestionTask[] = []
     const botMention = '@review-my-code-bot'
@@ -163,16 +170,37 @@ export class TaskDetector {
     // Get all issue comments
     const allComments = await githubApi.getAllIssueComments()
 
+    // Build a set of answered question IDs by looking for question-answer blocks
+    const answeredQuestionIds = new Set<string>()
+    for (const comment of allComments) {
+      const rmcocBlock = extractRmcocBlock(comment.body || '')
+      if (rmcocBlock?.type === 'question-answer') {
+        // The bot's answer has reply_to_comment_id pointing to the original question
+        const replyToId = (rmcocBlock as { reply_to_comment_id?: string })
+          .reply_to_comment_id
+        if (replyToId) {
+          answeredQuestionIds.add(replyToId)
+        }
+      }
+    }
+
     for (const comment of allComments) {
       if (!comment.body?.includes(botMention)) {
         continue
       }
 
+      const commentId = String(comment.id)
+
       // Check rmcoc block to see if already handled
       const rmcocBlock = extractRmcocBlock(comment.body)
 
-      // Skip if already answered
+      // Skip if already answered (original comment marked as ANSWERED)
       if (rmcocBlock?.type === 'question' && rmcocBlock.status === 'ANSWERED') {
+        continue
+      }
+
+      // Skip if we found a question-answer reply to this comment
+      if (answeredQuestionIds.has(commentId)) {
         continue
       }
 
@@ -195,7 +223,7 @@ export class TaskDetector {
         // Get conversation history for follow-ups
         const conversationHistory = await this.getConversationHistory(
           githubApi,
-          String(comment.id),
+          commentId,
           allComments
         )
 
@@ -203,14 +231,14 @@ export class TaskDetector {
           type: 'question-answering',
           priority: 2,
           questionContext: {
-            commentId: String(comment.id),
+            commentId,
             question: textAfterMention,
             author: comment.user?.login || 'unknown',
             fileContext: undefined // Issue comments don't have file context
           },
           conversationHistory,
           isManuallyTriggered: false,
-          triggerCommentId: String(comment.id)
+          triggerCommentId: commentId
         })
       }
     }
@@ -230,14 +258,16 @@ export class TaskDetector {
     config: ReviewConfig
   ): Promise<ReviewTask | null> {
     if (config.execution.mode === 'full-review') {
+      const isManual = config.execution.isManuallyTriggered
       return {
         type: 'full-review',
         priority: 3,
-        isManual: config.execution.isManuallyTriggered,
+        isManual,
         triggerCommentId: config.execution.triggerCommentId,
-        triggeredBy: config.execution.isManuallyTriggered
-          ? 'manual-request'
-          : 'opened'
+        triggeredBy: isManual ? 'manual-request' : 'opened',
+        // Auto reviews affect merge gate (exit code 1 on blocking issues)
+        // Manual reviews are informational only (exit code 0)
+        affectsMergeGate: !isManual
       }
     }
 

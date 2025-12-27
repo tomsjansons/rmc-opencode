@@ -16,6 +16,7 @@ import {
   createPromptInjectionDetector
 } from '../utils/prompt-injection-detector.js'
 import { REVIEW_PROMPTS, buildSecuritySensitivity } from './prompts.js'
+import type { ConversationMessage, QuestionContext } from '../task/types.js'
 import type {
   DisputeContext,
   PassResult,
@@ -644,26 +645,34 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
       .length
   }
 
-  async executeQuestionAnswering(): Promise<string> {
+  async executeQuestionAnswering(
+    questionContext?: QuestionContext,
+    conversationHistory?: ConversationMessage[]
+  ): Promise<string> {
     return await logger.group('Answering Developer Question', async () => {
-      const questionContext = this.config.execution.questionContext
+      // Use passed context or fall back to config (for backward compatibility)
+      const context = questionContext || this.config.execution.questionContext
 
-      if (!questionContext) {
+      if (!context) {
         throw new OrchestratorError('No question context provided')
       }
 
       const sanitizedQuestion = await this.sanitizeExternalInput(
-        questionContext.question,
-        `question from ${questionContext.author}`
+        context.question,
+        `question from ${context.author}`
       )
 
-      logger.info(
-        `Question from ${questionContext.author}: "${sanitizedQuestion}"`
-      )
+      logger.info(`Question from ${context.author}: "${sanitizedQuestion}"`)
 
-      if (questionContext.fileContext) {
+      if (context.fileContext) {
         logger.info(
-          `Context: ${questionContext.fileContext.path}${questionContext.fileContext.line ? `:${questionContext.fileContext.line}` : ''}`
+          `Context: ${context.fileContext.path}${context.fileContext.line ? `:${context.fileContext.line}` : ''}`
+        )
+      }
+
+      if (conversationHistory && conversationHistory.length > 0) {
+        logger.info(
+          `Including ${conversationHistory.length} prior messages in conversation`
         )
       }
 
@@ -677,12 +686,24 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
         REVIEW_PROMPTS.QUESTION_ANSWERING_SYSTEM
       )
 
-      const prompt = REVIEW_PROMPTS.ANSWER_QUESTION(
-        sanitizedQuestion,
-        questionContext.author,
-        questionContext.fileContext,
-        prContext.files.length > 0 ? prContext : undefined
-      )
+      // Build prompt with conversation history if available
+      let prompt: string
+      if (conversationHistory && conversationHistory.length > 0) {
+        prompt = REVIEW_PROMPTS.ANSWER_FOLLOWUP_QUESTION(
+          sanitizedQuestion,
+          context.author,
+          conversationHistory,
+          context.fileContext,
+          prContext.files.length > 0 ? prContext : undefined
+        )
+      } else {
+        prompt = REVIEW_PROMPTS.ANSWER_QUESTION(
+          sanitizedQuestion,
+          context.author,
+          context.fileContext,
+          prContext.files.length > 0 ? prContext : undefined
+        )
+      }
 
       logger.info('Sending question to OpenCode agent')
 
