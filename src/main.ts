@@ -62,6 +62,27 @@ export async function run(): Promise<void> {
     if (config.execution.mode === 'question-answering') {
       logger.info('Execution mode: Question Answering')
 
+      let originalCommentBody = ''
+
+      if (
+        config.execution.isManuallyTriggered &&
+        config.execution.triggerCommentId &&
+        config.execution.manualTriggerComments.enableStartComment
+      ) {
+        logger.info('Updating trigger comment with answering start status')
+
+        originalCommentBody = await github.getIssueComment(
+          config.execution.triggerCommentId
+        )
+
+        const updatedBody = `${originalCommentBody}\n\n---\n\n🤖 **Status:** Analyzing your question ⏳\n\n_I'm searching the codebase for an answer. This may take a moment..._`
+
+        await github.updateIssueComment(
+          config.execution.triggerCommentId,
+          updatedBody
+        )
+      }
+
       const answer = await orchestrator.executeQuestionAnswering()
 
       const questionContext = config.execution.questionContext
@@ -79,6 +100,24 @@ ${answer}
           formattedAnswer
         )
         logger.info('Answer posted successfully')
+      }
+
+      if (
+        config.execution.isManuallyTriggered &&
+        config.execution.triggerCommentId &&
+        config.execution.manualTriggerComments.enableEndComment
+      ) {
+        logger.info('Updating trigger comment with answer completion status')
+
+        const statusMessage =
+          '✅ **Status:** Answer Posted\n\n_See the answer in the reply below._'
+
+        const updatedBody = `${originalCommentBody}\n\n---\n\n${statusMessage}`
+
+        await github.updateIssueComment(
+          config.execution.triggerCommentId,
+          updatedBody
+        )
       }
 
       core.setOutput('review_status', 'question_answered')
