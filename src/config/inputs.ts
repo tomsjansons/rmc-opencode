@@ -1,13 +1,16 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
+
+import { LLMClientImpl } from '../opencode/llm-client.js'
 import type {
   DisputeContext,
   ExecutionMode,
   QuestionContext,
   ReviewConfig
 } from '../review/types.js'
+import { IntentClassifier } from '../task/classifier.js'
 
-export function parseInputs(): ReviewConfig {
+export async function parseInputs(): Promise<ReviewConfig> {
   const apiKey = core.getInput('openrouter_api_key', { required: true })
   const model = core.getInput('model', { required: true })
   const enableWeb = core.getBooleanInput('enable_web', { required: false })
@@ -77,10 +80,32 @@ export function parseInputs(): ReviewConfig {
     { required: true }
   )
 
+  const enableStartComment = core.getBooleanInput(
+    'review_manual_trigger_enable_start_comment',
+    { required: false }
+  )
+
+  const enableEndComment = core.getBooleanInput(
+    'review_manual_trigger_enable_end_comment',
+    { required: false }
+  )
+
   const context = github.context
 
-  const { mode, prNumber, questionContext, disputeContext } =
-    detectExecutionMode(context)
+  const tempLlmClient = new LLMClientImpl({
+    apiKey,
+    model: injectionVerificationModel
+  })
+  const intentClassifier = new IntentClassifier(tempLlmClient)
+
+  const {
+    mode,
+    prNumber,
+    questionContext,
+    disputeContext,
+    isManuallyTriggered,
+    triggerCommentId
+  } = await detectExecutionMode(context, intentClassifier)
 
   const owner = context.repo.owner
   const repo = context.repo.repo
@@ -125,17 +150,28 @@ export function parseInputs(): ReviewConfig {
     execution: {
       mode,
       questionContext,
-      disputeContext
+      disputeContext,
+      isManuallyTriggered,
+      triggerCommentId,
+      manualTriggerComments: {
+        enableStartComment,
+        enableEndComment
+      }
     }
   }
 }
 
-function detectExecutionMode(context: typeof github.context): {
+async function detectExecutionMode(
+  context: typeof github.context,
+  intentClassifier: IntentClassifier
+): Promise<{
   mode: ExecutionMode
   prNumber: number
   questionContext?: QuestionContext
   disputeContext?: DisputeContext
-} {
+  isManuallyTriggered: boolean
+  triggerCommentId?: string
+}> {
   if (context.eventName === 'pull_request_review_comment') {
     const comment = context.payload.comment
     const pullRequest = context.payload.pull_request
@@ -170,6 +206,8 @@ function detectExecutionMode(context: typeof github.context): {
     return {
       mode: 'dispute-resolution',
       prNumber: pullRequest.number,
+      isManuallyTriggered: true,
+      triggerCommentId: String(comment?.id || ''),
       disputeContext: {
         threadId: String(inReplyToId),
         replyCommentId: String(comment?.id || ''),
@@ -195,12 +233,27 @@ function detectExecutionMode(context: typeof github.context): {
     const botMention = '@review-my-code-bot'
 
     if (commentBody.includes(botMention)) {
-      const question = commentBody.replace(botMention, '').trim()
+      const textAfterMention = commentBody.replace(botMention, '').trim()
 
-      if (!question) {
+      if (!textAfterMention) {
         throw new Error(
-          `Please provide a question after ${botMention}. Example: "${botMention} Why is this function needed?"`
+          `Please provide instructions after ${botMention}. Examples:\n- "${botMention} please review this PR"\n- "${botMention} Why is this function needed?"`
         )
+      }
+
+      const intent = await intentClassifier.classifyBotMention(textAfterMention)
+      core.info(`Intent classified as: ${intent}`)
+
+      if (intent === 'review-request') {
+        core.info(`Review request detected via bot mention`)
+        core.info(`Requested by: ${comment?.user?.login || 'unknown'}`)
+
+        return {
+          mode: 'full-review',
+          prNumber: issue.number,
+          isManuallyTriggered: true,
+          triggerCommentId: String(comment?.id || '')
+        }
       }
 
       let fileContext: QuestionContext['fileContext'] | undefined
@@ -212,15 +265,17 @@ function detectExecutionMode(context: typeof github.context): {
         }
       }
 
-      core.info(`Question detected: "${question}"`)
+      core.info(`Question detected: "${textAfterMention}"`)
       core.info(`Asked by: ${comment?.user?.login || 'unknown'}`)
 
       return {
         mode: 'question-answering',
         prNumber: issue.number,
+        isManuallyTriggered: true,
+        triggerCommentId: String(comment?.id || ''),
         questionContext: {
           commentId: String(comment?.id || ''),
-          question,
+          question: textAfterMention,
           author: comment?.user?.login || 'unknown',
           fileContext
         }
@@ -259,7 +314,8 @@ function detectExecutionMode(context: typeof github.context): {
 
     return {
       mode: 'full-review',
-      prNumber
+      prNumber,
+      isManuallyTriggered: false
     }
   }
 

@@ -62,3 +62,5 @@ jobs:
           enable_web: false
           enable_human_escalation: false
           debug_logging: true
+          review_manual_trigger_enable_start_comment: true
+          review_manual_trigger_enable_end_comment: true

@@ -624,6 +624,296 @@ Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
     const words = this.normalizeForComparison(text).split(' ')
     return new Set(words.filter((w) => w.length > 2 && !STOP_WORDS.has(w)))
   }
+
+  async trackQuestionTask(
+    questionId: string,
+    author: string,
+    question: string,
+    commentId: string,
+    fileContext?: { path: string; line?: number }
+  ): Promise<void> {
+    core.info(`Tracking question task: ${questionId} from ${author}`)
+    core.debug(`Question: ${question.substring(0, 100)}...`)
+    if (fileContext) {
+      core.debug(
+        `File context: ${fileContext.path}:${fileContext.line || 'N/A'}`
+      )
+    }
+    // Note: Full persistence would update the comment with an rmcoc block
+    // For now, we just log - the question status is tracked via reply comments
+  }
+
+  async markQuestionInProgress(questionId: string): Promise<void> {
+    core.info(`Marking question ${questionId} as in progress`)
+    // Update the original comment with rmcoc block showing IN_PROGRESS status
+    try {
+      const comment = await this.octokit.issues.getComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(questionId)
+      })
+
+      const rmcocData = {
+        type: 'question',
+        status: 'IN_PROGRESS',
+        started_at: new Date().toISOString()
+      }
+
+      const existingBody = comment.data.body || ''
+      const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/
+      let updatedBody: string
+
+      if (rmcocRegex.test(existingBody)) {
+        updatedBody = existingBody.replace(
+          rmcocRegex,
+          `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+        )
+      } else {
+        updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+      }
+
+      await this.octokit.issues.updateComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(questionId),
+        body: updatedBody
+      })
+    } catch (error) {
+      core.warning(
+        `Failed to update question status to IN_PROGRESS: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async markQuestionAnswered(questionId: string): Promise<void> {
+    core.info(`Marking question ${questionId} as answered`)
+    // Update the original comment with rmcoc block showing ANSWERED status
+    try {
+      const comment = await this.octokit.issues.getComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(questionId)
+      })
+
+      const rmcocData = {
+        type: 'question',
+        status: 'ANSWERED',
+        completed_at: new Date().toISOString()
+      }
+
+      const existingBody = comment.data.body || ''
+      const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/
+      let updatedBody: string
+
+      if (rmcocRegex.test(existingBody)) {
+        updatedBody = existingBody.replace(
+          rmcocRegex,
+          `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+        )
+      } else {
+        updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+      }
+
+      await this.octokit.issues.updateComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(questionId),
+        body: updatedBody
+      })
+    } catch (error) {
+      core.warning(
+        `Failed to update question status to ANSWERED: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async trackManualReviewRequest(
+    requestId: string,
+    author: string,
+    commentId: string
+  ): Promise<void> {
+    core.info(`Tracking manual review request: ${requestId} from ${author}`)
+    core.debug(`Comment ID: ${commentId}`)
+    // The tracking is done when we update the comment status
+  }
+
+  async markManualReviewInProgress(requestId: string): Promise<void> {
+    core.info(`Marking manual review ${requestId} as in progress`)
+    try {
+      const comment = await this.octokit.issues.getComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(requestId)
+      })
+
+      const rmcocData = {
+        type: 'manual-pr-review',
+        status: 'IN_PROGRESS',
+        started_at: new Date().toISOString()
+      }
+
+      const existingBody = comment.data.body || ''
+      const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/
+      let updatedBody: string
+
+      if (rmcocRegex.test(existingBody)) {
+        updatedBody = existingBody.replace(
+          rmcocRegex,
+          `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+        )
+      } else {
+        updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+      }
+
+      await this.octokit.issues.updateComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(requestId),
+        body: updatedBody
+      })
+    } catch (error) {
+      core.warning(
+        `Failed to update manual review status to IN_PROGRESS: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async markManualReviewCompleted(requestId: string): Promise<void> {
+    core.info(`Marking manual review ${requestId} as completed`)
+    try {
+      const comment = await this.octokit.issues.getComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(requestId)
+      })
+
+      const rmcocData = {
+        type: 'manual-pr-review',
+        status: 'COMPLETED',
+        completed_at: new Date().toISOString()
+      }
+
+      const existingBody = comment.data.body || ''
+      const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/
+      let updatedBody: string
+
+      if (rmcocRegex.test(existingBody)) {
+        updatedBody = existingBody.replace(
+          rmcocRegex,
+          `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+        )
+      } else {
+        updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+      }
+
+      await this.octokit.issues.updateComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(requestId),
+        body: updatedBody
+      })
+    } catch (error) {
+      core.warning(
+        `Failed to update manual review status to COMPLETED: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async dismissManualReview(
+    requestId: string,
+    dismissedBy: string
+  ): Promise<void> {
+    core.info(
+      `Dismissing manual review ${requestId}, dismissed by: ${dismissedBy}`
+    )
+    try {
+      const comment = await this.octokit.issues.getComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(requestId)
+      })
+
+      const rmcocData = {
+        type: 'manual-pr-review',
+        status: 'DISMISSED_BY_AUTO_REVIEW',
+        dismissed_at: new Date().toISOString(),
+        dismissed_reason: `Dismissed by ${dismissedBy}`
+      }
+
+      const existingBody = comment.data.body || ''
+      const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/
+      let updatedBody: string
+
+      if (rmcocRegex.test(existingBody)) {
+        updatedBody = existingBody.replace(
+          rmcocRegex,
+          `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+        )
+      } else {
+        updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+      }
+
+      await this.octokit.issues.updateComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(requestId),
+        body: updatedBody
+      })
+    } catch (error) {
+      core.warning(
+        `Failed to dismiss manual review: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  /**
+   * Record that an auto review was triggered by a PR event.
+   * This is used to preserve merge gate behavior when reviews are cancelled.
+   */
+  async recordAutoReviewTrigger(
+    action: 'opened' | 'synchronize' | 'ready_for_review',
+    sha: string
+  ): Promise<void> {
+    core.info(`Recording auto review trigger: ${action} for SHA ${sha}`)
+
+    // Store in state metadata (persisted via comments in future)
+    // For now, we store in memory - the state will be rebuilt on next run
+    if (this.currentState) {
+      // Note: currentState is ReviewState, not ProcessState
+      // We need to extend this properly, but for now just log
+    }
+  }
+
+  /**
+   * Check if there's a pending (cancelled/incomplete) auto review for the current SHA.
+   * Returns the trigger info if found, null otherwise.
+   */
+  async getPendingAutoReviewTrigger(
+    currentSha: string
+  ): Promise<{ action: 'opened' | 'synchronize' | 'ready_for_review' } | null> {
+    // In a full implementation, this would check persisted state
+    // For now, return null - auto reviews won't be detected as "cancelled"
+    // The merge gate will still work for fresh auto reviews via config.execution.isManuallyTriggered
+    core.debug(`Checking for pending auto review trigger for SHA ${currentSha}`)
+    return null
+  }
+
+  /**
+   * Mark an auto review as completed.
+   */
+  async markAutoReviewCompleted(): Promise<void> {
+    core.info('Marking auto review as completed')
+  }
+
+  /**
+   * Check if the current execution was triggered by an auto review (PR event).
+   * This is used to determine if blocking issues should fail the action.
+   */
+  wasAutoReviewTriggered(): boolean {
+    // This is determined by config.execution.isManuallyTriggered
+    // The StateManager doesn't need to track this - main.ts already has this info
+    return false
+  }
 }
 
 const STOP_WORDS = new Set([
